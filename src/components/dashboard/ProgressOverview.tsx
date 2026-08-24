@@ -16,37 +16,33 @@ export default function ProgressOverview() {
     if (!profile) return;
     const fetchStats = async () => {
       try {
-        const [cbtRes, enrRes] = await Promise.all([
-          supabase
-            .from('cbt_attempts')
-            .select('score, total_questions')
-            .eq('student_id', profile.id)
-            .not('score', 'is', null),
-          supabase
-            .from('course_enrollments')
-            .select('*', { count: 'exact', head: true })
-            .eq('student_id', profile.id)
-        ]);
+        const { data: cbtAttempts } = await supabase
+          .from('cbt_attempts')
+          .select('score, total_questions, created_at, end_time, cbt_exams(course_code)')
+          .or(`user_id.eq.${profile.id},student_id.eq.${profile.id}`)
+          .not('score', 'is', null);
 
-        const cbtAttempts = cbtRes.data;
-        const enrolledCount = enrRes.count;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
 
-        let cbtCount = 0;
-        let cbtAvg = 0;
+        const todayAttempts = (cbtAttempts || []).filter((a: any) => {
+          const t = new Date(a.end_time || a.created_at);
+          return t >= today;
+        });
 
-        if (cbtAttempts && cbtAttempts.length > 0) {
-          cbtCount = cbtAttempts.length;
-          let sum = 0;
-          cbtAttempts.forEach(a => {
-             if(a.total_questions > 0) {
-                 sum += (a.score / a.total_questions) * 100;
-             }
-          });
-          cbtAvg = Math.round(sum / cbtCount);
-        }
+        const distinctCourses = new Set(todayAttempts.map((a: any) => a.cbt_exams?.course_code).filter(Boolean)).size;
+        const cbtCount = todayAttempts.length;
+
+        let sum = 0;
+        todayAttempts.forEach((a: any) => {
+          if (a.total_questions > 0 && a.score !== null && a.score !== undefined) {
+            sum += (a.score / a.total_questions) * 100;
+          }
+        });
+        const cbtAvg = cbtCount > 0 ? Math.round(sum / cbtCount) : 0;
 
         setStatsData({
-          topicsCount: enrolledCount || 0,
+          topicsCount: distinctCourses,
           cbtCount,
           cbtAvg,
         });
@@ -58,9 +54,9 @@ export default function ProgressOverview() {
   }, [profile?.id, profile?.role]);
 
   const stats = [
-    { label: 'Courses Enrolled', value: `${statsData.topicsCount}`, icon: BookOpen, color: 'text-blue-500', bg: 'bg-blue-500/10' },
-    { label: 'CBT Tests Taken', value: `${statsData.cbtCount}`, icon: Clock, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
-    { label: 'CBT Score Avg', value: `${statsData.cbtAvg}%`, icon: Target, color: 'text-purple-500', bg: 'bg-purple-500/10' },
+    { label: 'Courses Enrolled Today', value: `${statsData.topicsCount}`, icon: BookOpen, color: 'text-blue-500', bg: 'bg-blue-500/10' },
+    { label: 'CBT Taken Today', value: `${statsData.cbtCount}`, icon: Clock, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
+    { label: 'Average CBT Score Today', value: `${statsData.cbtAvg}%`, icon: Target, color: 'text-purple-500', bg: 'bg-purple-500/10' },
   ];
 
   return (

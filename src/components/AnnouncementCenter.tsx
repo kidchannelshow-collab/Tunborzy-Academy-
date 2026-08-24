@@ -58,10 +58,23 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
     const fetchAll = async () => {
       try {
         const [annRes, notifRes] = await Promise.all([
-          supabase.from('announcements').select('*').eq('target_role', profile.role).order('created_at', { ascending: false }),
+          supabase.from('announcements').select('*').order('created_at', { ascending: false }),
           supabase.from('notifications').select('*').eq('user_id', profile.id).order('created_at', { ascending: false })
         ]);
-        if (isMounted && annRes.data) setAnnouncements(annRes.data);
+        if (annRes.error) throw annRes.error;
+        if (notifRes.error) throw notifRes.error;
+        if (isMounted && annRes.data) {
+          const normalizedRole = String(profile.role || '').toLowerCase();
+          const visible = normalizedRole === 'admin'
+            ? annRes.data
+            : normalizedRole === 'lecturer'
+              ? annRes.data.filter((a: any) => a.lecturer_id === profile.id || a.created_by === profile.id)
+              : annRes.data.filter((a: any) => {
+                  const targetRole = String(a.target_role || '').toLowerCase();
+                  return !targetRole || targetRole === 'all' || targetRole === normalizedRole || (targetRole === 'student' && normalizedRole === 'student');
+                });
+          setAnnouncements(visible);
+        }
         if (isMounted && notifRes.data) setNotifications(notifRes.data);
       } catch (err) {
         console.error(err);
@@ -76,9 +89,15 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
         table: 'notifications',
         filter: `user_id=eq.${profile.id}`
       }, () => {
-        // Only fetch notifications to optimize
         supabase.from('notifications').select('*').eq('user_id', profile.id).order('created_at', { ascending: false })
           .then(res => { if (isMounted && res.data) setNotifications(res.data); });
+      })
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'announcements'
+      }, () => {
+        refreshAnnouncements().catch(err => console.error('Announcement realtime refresh failed:', err));
       })
       .subscribe();
       
@@ -101,19 +120,180 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
   const [formPriority, setFormPriority] = useState('Medium');
   const [formTarget, setFormTarget] = useState('Everyone');
   const [formSchedule, setFormSchedule] = useState('Immediate');
+  const [editingAnnouncement, setEditingAnnouncement] = useState<any | null>(null);
+  const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [filterStatus, setFilterStatus] = useState('All');
+  const [filterPriority, setFilterPriority] = useState('All');
 
   const getCategoryStyle = (catName: string) => {
     return CATEGORIES.find(c => c.name === catName) || CATEGORIES[0];
+  };
+
+  const resetAnnouncementForm = () => {
+    setFormTitle('');
+    setFormCategory(CATEGORIES[0].name);
+    setFormDesc('');
+    setFormPriority('Medium');
+    setFormTarget('Everyone');
+    setFormSchedule('Immediate');
+    setEditingAnnouncement(null);
+  };
+
+  const refreshAnnouncements = async () => {
+    const { data, error } = await supabase.from('announcements').select('*').order('created_at', { ascending: false });
+    if (error) throw error;
+    if (data) setAnnouncements(data);
+  };
+
+  const targetToRole = (target: string) => {
+    if (target === 'Students Only' || target === 'UTME Students' || target === 'Post-UTME Students' || target === 'Undergraduate Students') return 'Student';
+    if (target === 'Lecturers Only') return 'Lecturer';
+    if (target === 'Admin Only') return 'Admin';
+    return 'All';
+  };
+
+  const roleToTarget = (roleValue: string) => {
+    const value = String(roleValue || '').toLowerCase();
+    if (value === 'student') return 'Students Only';
+    if (value === 'lecturer') return 'Lecturers Only';
+    if (value === 'admin') return 'Admin Only';
+    return 'Everyone';
+  };
+
+  const openCreateAnnouncement = () => {
+    resetAnnouncementForm();
+    setShowCreateModal(true);
+  };
+
+  const openEditAnnouncement = (ann: any) => {
+    setEditingAnnouncement(ann);
+    setFormTitle(ann.title || '');
+    setFormCategory(ann.category || CATEGORIES[0].name);
+    setFormDesc(ann.description || ann.content || '');
+    setFormPriority(ann.priority || 'Medium');
+    setFormTarget(roleToTarget(ann.target_role || ann.target_audience));
+    setFormSchedule(ann.status === 'Scheduled' ? 'Schedule' : 'Immediate');
+    setShowCreateModal(true);
+  };
+
+  const handleSaveAnnouncement = async () => {
+    if (!profile || !formTitle.trim() || !formDesc.trim()) {
+      showToast('Title and announcement content are required', 'error');
+      return;
+    }
+    try {
+      const targetRole = targetToRole(formTarget);
+      if (editingAnnouncement) {
+        const { error } = await supabase.from('announcements').update({
+          title: formTitle.trim(),
+          content: formDesc.trim(),
+          description: formDesc.trim(),
+          category: formCategory,
+          priority: formPriority,
+          target_role: targetRole,
+          status: formSchedule === 'Schedule' ? 'Scheduled' : 'Published'
+        }).eq('id', editingAnnouncement.id);
+        if (error) throw error;
+        await refreshAnnouncements();
+        showToast('Announcement updated successfully', 'success');
+      } else {
+        const { error } = await supabase.from('announcements').insert({
+          title: formTitle.trim(),
+          content: formDesc.trim(),
+          description: formDesc.trim(),
+          category: formCategory,
+          priority: formPriority,
+          target_role: targetRole,
+          created_by: profile.id,
+          status: formSchedule === 'Schedule' ? 'Scheduled' : 'Published'
+        });
+        if (error) throw error;
+        if (formSchedule !== 'Schedule') {
+          if (targetRole === 'All') {
+            await notificationService.notifyRole('Student', formTitle, formDesc, 'announcement', '/announcements');
+            await notificationService.notifyRole('Lecturer', formTitle, formDesc, 'announcement', '/announcements');
+          } else {
+            await notificationService.notifyRole(targetRole, formTitle, formDesc, 'announcement', '/announcements');
+          }
+        }
+        await refreshAnnouncements();
+        showToast('Announcement published successfully', 'success');
+      }
+      resetAnnouncementForm();
+      setShowCreateModal(false);
+    } catch (error: any) {
+      console.error('Announcement save failed:', error);
+      showToast(error?.message || 'Unable to save announcement', 'error');
+    }
+  };
+
+  const handleDuplicateAnnouncement = async (ann: any) => {
+    if (!profile) return;
+    try {
+      const { error } = await supabase.from('announcements').insert({
+        title: `${ann.title || 'Announcement'} (Copy)`,
+        content: ann.content || ann.description || '',
+        description: ann.description || ann.content || '',
+        category: ann.category || 'General Announcement',
+        priority: ann.priority || 'Medium',
+        target_role: ann.target_role || 'All',
+        target_audience: ann.target_audience || 'All',
+        target_value: ann.target_value || null,
+        created_by: profile.id,
+        status: 'Published'
+      });
+      if (error) throw error;
+      await refreshAnnouncements();
+      showToast('Announcement copied successfully', 'success');
+    } catch (error: any) {
+      console.error('Announcement duplicate failed:', error);
+      showToast(error?.message || 'Unable to copy announcement', 'error');
+    }
+  };
+
+  const handleTogglePinAnnouncement = async (ann: any) => {
+    try {
+      const { error } = await supabase.from('announcements').update({ is_pinned: !Boolean(ann.is_pinned) }).eq('id', ann.id);
+      if (error) throw error;
+      setAnnouncements(prev => prev.map(item => item.id === ann.id ? { ...item, is_pinned: !Boolean(ann.is_pinned) } : item));
+      showToast(ann.is_pinned ? 'Announcement unpinned' : 'Announcement pinned', 'success');
+    } catch (error: any) {
+      console.error('Announcement pin failed:', error);
+      showToast(error?.message || 'Unable to change pin status', 'error');
+    }
+  };
+
+  const handleDeleteAnnouncement = async (id: string) => {
+    if (!profile) {
+      showToast('User profile not loaded yet. Please wait.', 'error');
+      return;
+    }
+    console.log('Deleting announcement ID:', id, 'by user:', profile.id, profile.role);
+    if (!window.confirm('Delete this announcement? This cannot be undone.')) return;
+    try {
+      const { data, error } = await supabase.from('announcements').delete().eq('id', id).select();
+      console.log('Supabase delete response:', { data, error });
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        console.warn('Delete affected 0 rows. RLS policy may have blocked the deletion.');
+        throw new Error('Deletion blocked by RLS policy (insufficient permissions) or record not found.');
+      }
+      setAnnouncements(prev => prev.filter(ann => ann.id !== id));
+      showToast('Announcement deleted successfully', 'success');
+    } catch (error: any) {
+      console.error('Announcement delete failed:', error);
+      showToast(error?.message || 'Unable to delete announcement', 'error');
+    }
   };
 
   const AdminDashboard = () => (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Total Announcements', val: '142', icon: Bell, color: 'text-indigo-400' },
-          { label: 'Total Views', val: '45.2K', icon: Eye, color: 'text-blue-400' },
-          { label: 'Avg Read Rate', val: '78%', icon: BarChart2, color: 'text-emerald-400' },
-          { label: 'Scheduled', val: '3', icon: Clock, color: 'text-amber-400' }
+          { label: 'Total Announcements', val: String(announcements.length), icon: Bell, color: 'text-indigo-400' },
+          { label: 'Total Views', val: '—', icon: Eye, color: 'text-blue-400' },
+          { label: 'Avg Read Rate', val: '—', icon: BarChart2, color: 'text-emerald-400' },
+          { label: 'Scheduled', val: String(announcements.filter(a => a.status === 'Scheduled').length), icon: Clock, color: 'text-amber-400' }
         ].map((stat, i) => (
           <div key={i} className="bg-[#0f172a]/80 backdrop-blur-md border border-slate-800 rounded-2xl p-5 flex items-center justify-between">
             <div>
@@ -139,11 +319,14 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
           />
         </div>
         <div className="flex items-center gap-3 w-full sm:w-auto">
-          <button className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-slate-800 text-slate-300 px-4 py-2.5 rounded-xl text-sm font-medium hover:bg-slate-700 transition-colors">
+          <button
+            onClick={() => setShowFilterPanel(v => !v)}
+            className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-colors ${showFilterPanel ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+          >
             <Filter size={16} /> Filter
           </button>
-          <button 
-            onClick={() => setShowCreateModal(true)}
+          <button
+            onClick={openCreateAnnouncement}
             className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-indigo-500 text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-indigo-400 transition-colors shadow-lg shadow-indigo-500/20"
           >
             <Plus size={18} /> Create New
@@ -151,8 +334,28 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
         </div>
       </div>
 
+      {showFilterPanel && (
+        <div className="bg-[#0f172a]/80 border border-slate-800 rounded-2xl p-4 flex flex-wrap gap-4 items-center">
+          <label className="text-sm text-slate-400 flex items-center gap-2">Status
+            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="bg-[#020617] border border-slate-700 text-white rounded-lg px-3 py-2">
+              <option>All</option><option>Published</option><option>Scheduled</option><option>Archived</option>
+            </select>
+          </label>
+          <label className="text-sm text-slate-400 flex items-center gap-2">Priority
+            <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)} className="bg-[#020617] border border-slate-700 text-white rounded-lg px-3 py-2">
+              <option>All</option><option>Low</option><option>Medium</option><option>High</option><option>Urgent</option>
+            </select>
+          </label>
+          <button onClick={() => { setFilterStatus('All'); setFilterPriority('All'); }} className="text-sm text-slate-400 hover:text-white">Reset</button>
+        </div>
+      )}
+
       <div className="space-y-4">
-        {announcements.map(ann => {
+        {announcements
+          .filter(ann => filterStatus === 'All' || ann.status === filterStatus)
+          .filter(ann => filterPriority === 'All' || ann.priority === filterPriority)
+          .filter(ann => !searchQuery || String(ann.title || '').toLowerCase().includes(searchQuery.toLowerCase()) || String(ann.description || ann.content || '').toLowerCase().includes(searchQuery.toLowerCase()))
+          .map(ann => {
           const style = getCategoryStyle(ann.category || 'General Notice');
           const Icon = style.icon;
           return (
@@ -187,10 +390,10 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
                   </div>
                   
                   <h3 className="text-lg font-bold text-white leading-tight">{ann.title}</h3>
-                  <p className="text-sm text-slate-400 line-clamp-2">{ann.description}</p>
+                  <p className="text-sm text-slate-400 line-clamp-2">{ann.description || ann.content || ''}</p>
                   
                   <div className="flex items-center gap-4 text-xs font-medium text-slate-500">
-                    <span className="flex items-center gap-1"><Users size={14} /> To: {ann.target}</span>
+                    <span className="flex items-center gap-1"><Users size={14} /> To: {ann.target || ann.target_audience || ann.target_role || 'Everyone'}</span>
                     <span className="flex items-center gap-1"><Calendar size={14} /> {new Date(ann.created_at).toLocaleDateString()}</span>
                     {ann.hasAttachment && <span className="flex items-center gap-1 text-indigo-400"><FileText size={14} /> Attachment</span>}
                   </div>
@@ -199,19 +402,31 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
                 <div className="flex lg:flex-col items-center justify-between lg:justify-center gap-4 lg:w-48 lg:border-l border-slate-800 lg:pl-5">
                   <div className="flex gap-4">
                     <div className="text-center">
-                      <p className="text-xl font-bold text-white">{ann.views}</p>
+                      <p className="text-xl font-bold text-white">{ann.views ?? '—'}</p>
                       <p className="text-xs text-slate-500">Views</p>
                     </div>
                     <div className="text-center">
-                      <p className="text-xl font-bold text-emerald-400">{ann.readRate}%</p>
+                      <p className="text-xl font-bold text-emerald-400">{ann.readRate != null ? `${ann.readRate}%` : '—'}</p>
                       <p className="text-xs text-slate-500">Read</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button className="p-2 text-slate-400 hover:text-indigo-400 bg-slate-800/50 hover:bg-slate-800 rounded-lg transition-colors" title="Edit" ><Edit2 size={16} /></button>
-                    <button className="p-2 text-slate-400 hover:text-white bg-slate-800/50 hover:bg-slate-800 rounded-lg transition-colors" title="Duplicate"><Copy size={16} /></button>
-                    <button className="p-2 text-slate-400 hover:text-amber-400 bg-slate-800/50 hover:bg-slate-800 rounded-lg transition-colors" title="Pin/Unpin"><Pin size={16} /></button>
-                    <button className="p-2 text-slate-400 hover:text-rose-400 bg-slate-800/50 hover:bg-slate-800 rounded-lg transition-colors" title="Delete"><Trash2 size={16} /></button>
+                    <button onClick={() => openEditAnnouncement(ann)} className="p-2 text-slate-400 hover:text-indigo-400 bg-slate-800/50 hover:bg-slate-800 rounded-lg transition-colors" title="Edit">
+                      <Edit2 size={16} />
+                    </button>
+                    <button onClick={() => handleDuplicateAnnouncement(ann)} className="p-2 text-slate-400 hover:text-white bg-slate-800/50 hover:bg-slate-800 rounded-lg transition-colors" title="Duplicate">
+                      <Copy size={16} />
+                    </button>
+                    <button onClick={() => handleTogglePinAnnouncement(ann)} className={`p-2 bg-slate-800/50 hover:bg-slate-800 rounded-lg transition-colors ${ann.is_pinned ? 'text-amber-400' : 'text-slate-400 hover:text-amber-400'}`} title={ann.is_pinned ? 'Unpin' : 'Pin'}>
+                      <Pin size={16} />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteAnnouncement(ann.id)}
+                      className="p-2 text-slate-400 hover:text-rose-400 bg-slate-800/50 hover:bg-slate-800 rounded-lg transition-colors"
+                      title="Delete"
+                    >
+                      <Trash2 size={16} />
+                    </button>
                   </div>
                 </div>
               </div>
@@ -487,9 +702,9 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
               >
                 <div className="flex items-center justify-between p-6 border-b border-slate-800">
                   <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                    <Edit2 className="text-indigo-400" size={20} /> Create Announcement
+                    <Edit2 className="text-indigo-400" size={20} /> {editingAnnouncement ? 'Edit Announcement' : 'Create Announcement'}
                   </h2>
-                  <button onClick={() => setShowCreateModal(false)} className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-800 transition-colors">
+                  <button onClick={() => { resetAnnouncementForm(); setShowCreateModal(false); }} className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-800 transition-colors">
                     <X size={20} />
                   </button>
                 </div>
@@ -498,7 +713,9 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
                   <div className="space-y-2">
                     <label className="text-sm font-semibold text-slate-300">Announcement Title</label>
                     <input 
-                      type="text" 
+                      type="text"
+                      value={formTitle}
+                      onChange={e => setFormTitle(e.target.value)}
                       placeholder="e.g. Scheduled Maintenance Notice"
                       className="w-full bg-[#020617] border border-slate-700 text-white rounded-xl py-3 px-4 focus:outline-none focus:border-indigo-500 transition-colors"
                     />
@@ -507,13 +724,13 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                       <label className="text-sm font-semibold text-slate-300">Category</label>
-                      <select className="w-full bg-[#020617] border border-slate-700 text-white rounded-xl py-3 px-4 focus:outline-none focus:border-indigo-500 transition-colors appearance-none">
+                      <select value={formCategory} onChange={e => setFormCategory(e.target.value)} className="w-full bg-[#020617] border border-slate-700 text-white rounded-xl py-3 px-4 focus:outline-none focus:border-indigo-500 transition-colors appearance-none">
                         {CATEGORIES.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                       </select>
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-semibold text-slate-300">Target Audience</label>
-                      <select className="w-full bg-[#020617] border border-slate-700 text-white rounded-xl py-3 px-4 focus:outline-none focus:border-indigo-500 transition-colors appearance-none">
+                      <select value={formTarget} onChange={e => setFormTarget(e.target.value)} className="w-full bg-[#020617] border border-slate-700 text-white rounded-xl py-3 px-4 focus:outline-none focus:border-indigo-500 transition-colors appearance-none">
                         {TARGETS.map(t => <option key={t} value={t}>{t}</option>)}
                       </select>
                     </div>
@@ -521,8 +738,10 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
 
                   <div className="space-y-2">
                     <label className="text-sm font-semibold text-slate-300">Description</label>
-                    <textarea 
+                    <textarea
                       rows={5}
+                      value={formDesc}
+                      onChange={e => setFormDesc(e.target.value)}
                       placeholder="Write your announcement here..."
                       className="w-full bg-[#020617] border border-slate-700 text-white rounded-xl py-3 px-4 focus:outline-none focus:border-indigo-500 transition-colors resize-none"
                     ></textarea>
@@ -596,37 +815,10 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
                     <Eye size={16} /> Preview
                   </button>
                   <div className="flex gap-3">
-                    <button onClick={() => setShowCreateModal(false)} className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-300 hover:bg-slate-800 transition-colors">
+                    <button onClick={() => { resetAnnouncementForm(); setShowCreateModal(false); }} className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-300 hover:bg-slate-800 transition-colors">
                       Cancel
                     </button>
-                    <button onClick={async () => {
-  if (!profile) return;
-  try {
-    let targetRole = 'Student';
-    if (formTarget === 'Lecturers Only') targetRole = 'Lecturer';
-    if (formTarget === 'Admin Only') targetRole = 'Admin';
-    
-    await supabase.from('announcements').insert({
-      title: formTitle,
-      content: formDesc,
-      target_role: targetRole,
-      created_by: profile.id
-    });
-    
-    // Also broadcast a notification
-    if (targetRole === 'Everyone') {
-      await notificationService.notifyRole('Student', formTitle, formDesc, 'announcement', '/announcements');
-      await notificationService.notifyRole('Lecturer', formTitle, formDesc, 'announcement', '/announcements');
-    } else {
-      await notificationService.notifyRole(targetRole, formTitle, formDesc, 'announcement', '/announcements');
-    }
-    
-    const { data } = await supabase.from('announcements').select('*').eq('target_role', profile.role).order('created_at', { ascending: false });
-    if (data) setAnnouncements(data);
-    
-    setShowCreateModal(false);
-  } catch(err) { console.error(err); }
-}} className="px-6 py-2.5 rounded-xl text-sm font-bold bg-indigo-500 text-white hover:bg-indigo-400 transition-colors shadow-lg shadow-indigo-500/20 flex items-center gap-2">
+                    <button onClick={handleSaveAnnouncement} className="px-6 py-2.5 rounded-xl text-sm font-bold bg-indigo-500 text-white hover:bg-indigo-400 transition-colors shadow-lg shadow-indigo-500/20 flex items-center gap-2">
   <Send size={16} /> {formSchedule === 'Immediate' ? 'Publish' : 'Schedule'}
 </button>
                   </div>

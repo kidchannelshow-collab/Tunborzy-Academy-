@@ -22,7 +22,7 @@ interface AdminDashboardProps {
   onNavigate?: (view: string) => void;
 }
 
-export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
+export default function AdminDashboard({ onLogout, onNavigate }: AdminDashboardProps) {
   const [currentView, setCurrentView] = useState('overview');
 
   const renderView = () => {
@@ -68,7 +68,13 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
     <AdminDashboardLayout 
       onLogout={onLogout} 
       currentView={currentView} 
-      onNavigate={setCurrentView}
+      onNavigate={(view) => {
+        if (view === 'announcements') {
+          onNavigate?.('announcements');
+          return;
+        }
+        setCurrentView(view);
+      }}
     >
       {renderView()}
     </AdminDashboardLayout>

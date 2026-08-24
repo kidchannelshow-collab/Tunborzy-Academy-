@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from 'motion/react';
 import { Lock, Crown, RefreshCcw, PenTool, CheckCircle2, Loader2 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useProfile } from '../../lib/useProfile';
 import { supabase } from '../../supabaseClient';
 
@@ -15,6 +15,54 @@ export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
   
   const isPremium = profile?.premium_status === 'Active' || profile?.premium_status === 'Premium' || profile?.premium_status === 'Pro';
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const paymentStatus = params.get('payment_status');
+    const txRef = params.get('tx_ref');
+    if (paymentStatus === 'success' && txRef) {
+      setShowModal(true);
+      verifyCallbackPayment(txRef, params.get('transaction_id'));
+    }
+  }, []);
+
+  const verifyCallbackPayment = async (reference: string, transactionId?: string | null) => {
+    setPaying(true);
+    setSuccessMsg('Verifying your payment with Flutterwave...');
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error('Not authenticated.');
+
+      const res = await fetch('/api/payments/verify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          reference,
+          transactionId: transactionId || `tx_${Date.now()}`,
+          amount: 5000.00,
+          plan: 'premium'
+        })
+      });
+
+      const text = await res.text();
+      let data = JSON.parse(text);
+      if (!res.ok) throw new Error(data.error || 'Payment verification failed');
+
+      setSuccessMsg('Premium successfully activated!');
+      window.history.replaceState({}, document.title, window.location.pathname);
+      setTimeout(() => {
+        window.location.reload();
+      }, 1200);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Verification error');
+    } finally {
+      setPaying(false);
+    }
+  };
+
   const handleActivatePremium = async () => {
     setPaying(true);
     setErrorMsg('');
@@ -27,7 +75,42 @@ export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
         throw new Error('Not authenticated. Please sign in again.');
       }
 
-      const reference = `FLW_TX_${Date.now()}_${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+      const initRes = await fetch('/api/payments/initialize', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          amount: 5000.00,
+          plan: 'premium'
+        })
+      });
+
+      const initText = await initRes.text();
+      let initData;
+      try {
+        initData = JSON.parse(initText);
+      } catch (e) {
+        throw new Error('Server returned invalid response. Please try again.');
+      }
+      if (!initRes.ok) throw new Error(initData.error || 'Payment initialization failed');
+
+      if (initData.payment_link) {
+        setSuccessMsg('Opening Flutterwave secure checkout in a new tab...');
+        // Open in new tab to avoid iframe sandbox restrictions
+        const newWindow = window.open(initData.payment_link, '_blank');
+        if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
+          // Fallback if popup blocked
+          if (confirm('Popup blocked! Click OK to open payment checkout in this window.')) {
+            window.location.href = initData.payment_link;
+          }
+        }
+        setPaying(false);
+        return;
+      }
+
+      const reference = initData.reference || `FLW_TX_${Date.now()}_${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
       
       const res = await fetch('/api/payments/verify', {
         method: 'POST',
@@ -43,7 +126,13 @@ export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
         })
       });
 
-      const data = await res.json();
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        throw new Error('Server returned invalid response during verification.');
+      }
       if (!res.ok) throw new Error(data.error || 'Payment verification failed');
 
       setSuccessMsg('Premium successfully activated!');

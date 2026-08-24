@@ -1,18 +1,54 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Bell } from 'lucide-react';
+import { supabase } from '../supabaseClient';
+import { useProfile } from '../lib/useProfile';
 
 interface FloatingNotificationButtonProps {
   onClick: () => void;
 }
 
 export default function FloatingNotificationButton({ onClick }: FloatingNotificationButtonProps) {
+  const { profile } = useProfile();
   const [position, setPosition] = useState({ x: -1, y: -1 }); // -1 means default position
+  const [unreadCount, setUnreadCount] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   
   const posRef = useRef({ x: -1, y: -1 });
   const dragStartPos = useRef({ x: 0, y: 0 });
   const dragStartMouse = useRef({ x: 0, y: 0 });
+
+  useEffect(() => {
+    if (!profile?.id || !supabase) {
+      setUnreadCount(0);
+      return;
+    }
+
+    let mounted = true;
+    const loadUnread = async () => {
+      const { count, error } = await supabase
+        .from('notifications')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', profile.id)
+        .eq('is_read', false);
+      if (!error && mounted) setUnreadCount(count || 0);
+    };
+
+    loadUnread();
+    const channel = supabase.channel(`floating_notifications_${profile.id}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'notifications',
+        filter: `user_id=eq.${profile.id}`
+      }, loadUnread)
+      .subscribe();
+
+    return () => {
+      mounted = false;
+      supabase.removeChannel(channel);
+    };
+  }, [profile?.id]);
 
   // Initialize position from localStorage
   useEffect(() => {
@@ -160,9 +196,14 @@ export default function FloatingNotificationButton({ onClick }: FloatingNotifica
           top: position.y,
           transition: isDragging ? 'none' : 'left 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)'
         }}
-        title="Go to Announcement Center"
+        title="Go to Announcement Center" aria-label="Open Announcement Center"
       >
         <Bell size={24} />
+        {unreadCount > 0 && (
+          <span className="absolute -right-0.5 -top-0.5 min-w-5 h-5 px-1 rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center border-2 border-[#020617]">
+            {unreadCount > 99 ? '99+' : unreadCount}
+          </span>
+        )}
       </button>
     </div>
   );

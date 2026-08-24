@@ -15,6 +15,39 @@ export default function UTMEDashboard({ onStartExam, onViewHistory }: UTMEDashbo
   const [topics, setTopics] = useState<any[]>([]);
   const [history, setHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const todayStats = React.useMemo(() => {
+    if (!profile || history.length === 0) {
+      return { coursesToday: 0, cbtTakenToday: 0, avgScoreToday: 0 };
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const todayAttempts = history.filter(h => {
+      const d = new Date(h.created_at);
+      return d >= today;
+    });
+
+    const distinctSubjects = new Set(todayAttempts.map(a => a.subject_id)).size;
+    const cbtTaken = todayAttempts.length;
+
+    let scoreSum = 0;
+    let scoreCount = 0;
+    todayAttempts.forEach(a => {
+      const val = a.score !== null && a.score !== undefined ? a.score : a.percentage;
+      if (val !== null && val !== undefined) {
+        scoreSum += Number(val);
+        scoreCount++;
+      }
+    });
+    const avgScore = scoreCount > 0 ? Math.round(scoreSum / scoreCount) : 0;
+
+    return {
+      coursesToday: distinctSubjects,
+      cbtTakenToday: cbtTaken,
+      avgScoreToday: avgScore
+    };
+  }, [history, profile]);
   
   const [selectedSubject, setSelectedSubject] = useState<any | null>(null);
   const [selectedMode, setSelectedMode] = useState<'full' | 'topic' | 'random'>('full');
@@ -178,6 +211,44 @@ export default function UTMEDashboard({ onStartExam, onViewHistory }: UTMEDashbo
           </div>
         </div>
       </div>
+
+      {/* Today's Progress Section */}
+      {!selectedSubject && (
+        <div className="space-y-4">
+          <h3 className="text-xl font-display font-bold text-white flex items-center gap-2">
+            <Clock className="text-emerald-400" size={20} /> Today's Progress
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-5 flex items-center gap-4 shadow-lg">
+              <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400">
+                <BookOpen size={24} />
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-white">{todayStats.coursesToday}</div>
+                <div className="text-xs text-slate-400">Courses Enrolled Today</div>
+              </div>
+            </div>
+            <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-5 flex items-center gap-4 shadow-lg">
+              <div className="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                <Clock size={24} />
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-white">{todayStats.cbtTakenToday}</div>
+                <div className="text-xs text-slate-400">CBT Taken Today</div>
+              </div>
+            </div>
+            <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-5 flex items-center gap-4 shadow-lg">
+              <div className="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center text-purple-400">
+                <Award size={24} />
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-white">{todayStats.avgScoreToday}%</div>
+                <div className="text-xs text-slate-400">Average CBT Score Today</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {!selectedSubject ? (
         <div className="space-y-6">

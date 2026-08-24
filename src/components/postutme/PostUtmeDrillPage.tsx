@@ -56,6 +56,58 @@ export default function PostUtmeDrillPage() {
   const [attemptId, setAttemptId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [filterUni, setFilterUni] = useState('ALL');
+  const [todayStats, setTodayStats] = useState({ coursesToday: 0, cbtTakenToday: 0, avgScoreToday: 0 });
+
+  useEffect(() => {
+    fetchPublishedExams();
+    fetchTodayStats();
+  }, []);
+
+  const fetchTodayStats = async () => {
+    try {
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabase = createClient(
+        import.meta.env.VITE_SUPABASE_URL,
+        import.meta.env.VITE_SUPABASE_ANON_KEY
+      );
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const { data: attempts } = await supabase
+        .from('post_utme_attempts')
+        .select('score, start_time, end_time, post_utme_exams(subject, university)')
+        .eq('user_id', user.id);
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const todayAttempts = (attempts || []).filter((a: any) => {
+        const t = new Date(a.end_time || a.start_time);
+        return t >= today;
+      });
+
+      const distinctCourses = new Set(todayAttempts.map((a: any) => a.post_utme_exams?.subject || a.post_utme_exams?.university).filter(Boolean)).size;
+      const cbtTaken = todayAttempts.length;
+
+      let scoreSum = 0;
+      let scoreCount = 0;
+      todayAttempts.forEach((a: any) => {
+        if (a.score !== null && a.score !== undefined) {
+          scoreSum += Number(a.score);
+          scoreCount++;
+        }
+      });
+      const avgScore = scoreCount > 0 ? Math.round(scoreSum / scoreCount) : 0;
+
+      setTodayStats({
+        coursesToday: distinctCourses,
+        cbtTakenToday: cbtTaken,
+        avgScoreToday: avgScore
+      });
+    } catch (err) {
+      console.error('Error fetching Post-UTME today stats:', err);
+    }
+  };
 
   useEffect(() => {
     fetchPublishedExams();
@@ -201,6 +253,42 @@ export default function PostUtmeDrillPage() {
           </div>
           <div className="absolute right-0 bottom-0 opacity-10 translate-x-8 translate-y-8">
             <Building2 className="w-64 h-64" />
+          </div>
+        </div>
+
+        {/* Today's Progress Section */}
+        <div className="space-y-4">
+          <h3 className="text-xl font-display font-bold text-gray-900 dark:text-white flex items-center gap-2">
+            <Clock className="text-indigo-500" size={20} /> Today's Progress
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-5 flex items-center gap-4 shadow-sm">
+              <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-500">
+                <BookOpen size={24} />
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-gray-900 dark:text-white">{todayStats.coursesToday}</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">Courses Enrolled Today</div>
+              </div>
+            </div>
+            <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-5 flex items-center gap-4 shadow-sm">
+              <div className="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-500">
+                <Clock size={24} />
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-gray-900 dark:text-white">{todayStats.cbtTakenToday}</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">CBT Taken Today</div>
+              </div>
+            </div>
+            <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-5 flex items-center gap-4 shadow-sm">
+              <div className="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center text-purple-500">
+                <Award size={24} />
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-gray-900 dark:text-white">{todayStats.avgScoreToday}%</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">Average CBT Score Today</div>
+              </div>
+            </div>
           </div>
         </div>
 

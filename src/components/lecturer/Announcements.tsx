@@ -74,10 +74,15 @@ export default function Announcements() {
     if (!confirm('Delete this announcement?')) return;
     if (!supabase) return;
     try {
-      await supabase.from('announcements').delete().eq('id', id);
+      const { data, error } = await supabase.from('announcements').delete().eq('id', id).select();
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        throw new Error('Deletion blocked by RLS policy or record not found.');
+      }
       setAnnouncements(announcements.filter(a => a.id !== id));
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      alert('Failed to delete: ' + (e.message || 'Unknown error'));
     }
   };
 

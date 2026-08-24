@@ -178,6 +178,69 @@ ${(content || '').substring(0, 10000)}`;
       }
     });
 
+    app.post('/api/cbt/parse-pdf', async (req, res) => {
+      try {
+        const { pdfText, courseId } = req.body;
+        
+        if (!pdfText) {
+          return res.status(400).json({ error: 'No text provided from PDF.' });
+        }
+
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) {
+          return res.status(500).json({ error: 'GEMINI_API_KEY is not configured.' });
+        }
+
+        const ai = new GoogleGenAI({ apiKey });
+
+        const prompt = `
+          You are an expert UTME examination question generator. Analyze the following study material or past question text and generate multiple-choice questions (MCQs).
+          Return ONLY a valid JSON array of objects. Do not include markdown ticks like \`\`\`json.
+          Each object must have this exact structure:
+          {
+            "question_text": "The clear question statement?",
+            "options": ["Option A", "Option B", "Option C", "Option D"],
+            "correct_answer": 0,
+            "explanation": "Brief explanation why the option is correct."
+          }
+
+          Text to analyze:
+          ${pdfText.substring(0, 15000)}
+        `;
+
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: prompt,
+        });
+
+        const rawResponseText = response.text ? response.text.trim() : '';
+        const cleanedJson = rawResponseText.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '');
+        const questionsArray = JSON.parse(cleanedJson);
+
+        const insertPayload = questionsArray.map((q: any) => ({
+          course_id: courseId || null,
+          question_text: q.question_text,
+          options: q.options,
+          correct_answer: q.correct_answer,
+          explanation: q.explanation || null
+        }));
+
+        const { data, error } = await supabase.from('cbt_questions').insert(insertPayload).select();
+
+        if (error) throw error;
+
+        return res.status(200).json({ 
+          success: true, 
+          message: `Successfully generated and saved ${data?.length || 0} CBT questions!`,
+          questions: data 
+        });
+
+      } catch (err: any) {
+        console.error('PDF CBT Parsing Error:', err);
+        return res.status(500).json({ error: err.message || 'Failed to parse PDF and generate questions.' });
+      }
+    });
+
     app.post('/api/chat', async (req, res) => {
     try {
       
@@ -655,6 +718,89 @@ Instructions:
     }
   });
 
+  // Flutterwave Payment Initialization Route
+  app.post('/api/payments/initialize', async (req, res) => {
+    try {
+      const { amount, plan } = req.body;
+      const authHeader = req.headers.authorization;
+      if (!authHeader) return res.status(401).json({ error: 'Missing authorization header' });
+
+      const { createClient } = await import('@supabase/supabase-js');
+      const sb = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_PUBLISHABLE_KEY, {
+        global: { headers: { Authorization: authHeader } }
+      });
+
+      const { data: userData, error: userErr } = await sb.auth.getUser();
+      if (userErr || !userData?.user) {
+        return res.status(401).json({ error: 'Unauthorized user' });
+      }
+      const user = userData.user;
+
+      const reference = `FLW_TX_${Date.now()}_${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+      const flwSecret = process.env.FLUTTERWAVE_SECRET_KEY || process.env.VITE_FLUTTERWAVE_SECRET_KEY;
+      
+      if (!flwSecret) {
+        return res.status(400).json({ 
+          error: 'Flutterwave secret key is not configured on the server. Please set FLUTTERWAVE_SECRET_KEY in your environment.' 
+        });
+      }
+
+      const proto = req.get('x-forwarded-proto') || req.protocol || 'https';
+      const host = req.get('host');
+      const origin = `${proto}://${host}`;
+      const returnUrl = `${origin}/dashboard?payment_status=success&tx_ref=${reference}`;
+
+      try {
+        const flwPayload = {
+          tx_ref: reference,
+          amount: amount || 5000.00,
+          currency: 'NGN',
+          redirect_url: returnUrl,
+          customer: {
+            email: user.email || 'student@example.com',
+            name: user.user_metadata?.full_name || user.email || 'Student'
+          },
+          customizations: {
+            title: 'Lagos State University Portal - Premium Access',
+            description: 'Unlock Premium Features, CBT Exam Simulator, and Revision Tools'
+          }
+        };
+
+        const flwRes = await fetch('https://api.flutterwave.com/v3/payments', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${flwSecret}`
+          },
+          body: JSON.stringify(flwPayload)
+        });
+
+        const flwData = await flwRes.json();
+        
+        if (flwRes.ok && flwData.status === 'success' && flwData.data?.link) {
+          return res.json({
+            success: true,
+            reference,
+            payment_link: flwData.data.link
+          });
+        } else {
+          console.error('Flutterwave API error response:', flwData);
+          return res.status(400).json({ 
+            error: flwData.message || 'Failed to generate Flutterwave payment link. Please check your API keys.' 
+          });
+        }
+      } catch (flwErr: any) {
+        console.error('Flutterwave initialize fetch error:', flwErr);
+        return res.status(500).json({ 
+          error: flwErr.message || 'Network error while communicating with Flutterwave API.' 
+        });
+      }
+    } catch (err: any) {
+      console.error('Payment initialization error:', err);
+      res.status(500).json({ error: err.message || 'Internal payment initialization error.' });
+    }
+  });
+
   // Flutterwave Payment Verification Route
   app.post('/api/payments/verify', async (req, res) => {
     try {
@@ -677,8 +823,15 @@ Instructions:
         return res.status(400).json({ error: 'Missing payment reference' });
       }
 
-      // 1. Idempotency check: verify if payment reference was already processed
-      const { data: existingPayment } = await sb.from('payments').select('*').eq('reference', reference).maybeSingle();
+      // 1. Idempotency check: verify if payment reference was already processed (graceful if table missing)
+      let existingPayment = null;
+      try {
+        const { data } = await sb.from('payments').select('*').eq('reference', reference).maybeSingle();
+        existingPayment = data;
+      } catch (err) {
+        console.warn('Payments table not found or query skipped:', err);
+      }
+
       if (existingPayment) {
         await sb.from('profiles').update({
           premium_status: 'Active',
@@ -717,20 +870,24 @@ Instructions:
         return res.status(400).json({ error: 'Payment verification failed or transaction was not successful.' });
       }
 
-      // 3. Record payment in payments table (idempotent)
-      const { error: payErr } = await sb.from('payments').insert([{
-        user_id: userId,
-        reference: reference.trim(),
-        transaction_id: transactionId ? String(transactionId) : null,
-        amount: amount || 5000.00,
-        currency: 'NGN',
-        status: 'successful',
-        provider: 'flutterwave',
-        plan: plan || 'premium'
-      }]);
+      // 3. Record payment in payments table (graceful fallback if payments table missing)
+      try {
+        const { error: payErr } = await sb.from('payments').insert([{
+          user_id: userId,
+          reference: reference.trim(),
+          transaction_id: transactionId ? String(transactionId) : null,
+          amount: amount || 5000.00,
+          currency: 'NGN',
+          status: 'successful',
+          provider: 'flutterwave',
+          plan: plan || 'premium'
+        }]);
 
-      if (payErr && !payErr.message.includes('duplicate key')) {
-        throw payErr;
+        if (payErr && !payErr.message.includes('duplicate key') && !payErr.message.includes('schema cache')) {
+          console.warn('Payment record insert warning:', payErr);
+        }
+      } catch (err) {
+        console.warn('Payments table insert skipped due to missing table or schema cache:', err);
       }
 
       // 4. Update user profile to Active
@@ -1079,6 +1236,11 @@ Instructions:
       console.error('Audit logs fetch error:', err);
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // API 404 JSON fallback middleware
+  app.use('/api/*', (req, res) => {
+    res.status(404).json({ error: 'API endpoint not found' });
   });
 
   // Vite middleware for development
