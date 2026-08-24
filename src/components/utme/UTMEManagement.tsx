@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Edit2, Trash2, CheckCircle2, ShieldAlert, BookOpen, Layers, FileText, Copy, Check, Eye } from 'lucide-react';
+import { Plus, Edit2, Trash2, CheckCircle2, ShieldAlert, BookOpen, Layers, FileText, Copy, Check, Eye, Sparkles } from 'lucide-react';
 import { supabase } from '../../supabaseClient';
 import { useProfile } from '../../lib/useProfile';
+import AdminPdfUploader from '../cbt/AdminPdfUploader';
 
 export default function UTMEManagement() {
   const { profile } = useProfile();
-  const [activeTab, setActiveTab] = useState<'subjects' | 'topics' | 'questions'>('subjects');
+  const [activeTab, setActiveTab] = useState<'subjects' | 'topics' | 'questions' | 'ai_generator'>('subjects');
   
   const [subjects, setSubjects] = useState<any[]>([]);
   const [topics, setTopics] = useState<any[]>([]);
@@ -185,7 +186,8 @@ export default function UTMEManagement() {
         {[
           { id: 'subjects', label: 'UTME Subjects', icon: BookOpen },
           { id: 'topics', label: 'Topics', icon: Layers },
-          { id: 'questions', label: 'Question Bank', icon: FileText }
+          { id: 'questions', label: 'Question Bank', icon: FileText },
+          { id: 'ai_generator', label: 'AI PDF Generator', icon: Sparkles }
         ].map(tab => (
           <button
             key={tab.id}
@@ -200,6 +202,12 @@ export default function UTMEManagement() {
           </button>
         ))}
       </div>
+
+      {activeTab === 'ai_generator' && (
+        <div className="py-4">
+          <AdminPdfUploader />
+        </div>
+      )}
 
       {activeTab === 'subjects' && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
