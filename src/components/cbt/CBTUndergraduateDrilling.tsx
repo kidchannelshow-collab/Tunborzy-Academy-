@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { BookOpen, ChevronRight, ChevronLeft, Target, Play, ShieldAlert, Award, Layers } from 'lucide-react';
+import { ChevronRight, ChevronLeft, Award, Layers, Shuffle, ListTree, Play, AlertCircle } from 'lucide-react';
 import { supabase } from '../../supabaseClient';
 
 interface CBTUndergraduateDrillingProps {
@@ -9,18 +9,25 @@ interface CBTUndergraduateDrillingProps {
   onViewAnalytics?: () => void;
 }
 
+interface TopicCount {
+  name: string;
+  count: number;
+}
+
 export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewAnalytics }: CBTUndergraduateDrillingProps) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   
   const [selectedSemester, setSelectedSemester] = useState<'First Semester' | 'Second Semester' | null>(null);
   const [courses, setCourses] = useState<{ code: string, title: string, type: 'Academic' | 'CBT-Only' }[]>([]);
-  const [topics, setTopics] = useState<string[]>([]);
-  
   const [selectedCourse, setSelectedCourse] = useState<string | null>(null);
-  const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
+
+  // Practice mode & topics
+  const [practiceMode, setPracticeMode] = useState<'random' | 'topic'>('random');
+  const [topicsWithCounts, setTopicsWithCounts] = useState<TopicCount[]>([]);
+  const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Configuration for the drill
+  // Configuration
   const [questionCount, setQuestionCount] = useState(20);
   const [isTimed, setIsTimed] = useState(true);
   const [timeMinutes, setTimeMinutes] = useState(30);
@@ -50,47 +57,76 @@ export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewA
   const handleSemesterSelect = (semester: 'First Semester' | 'Second Semester') => {
     setSelectedSemester(semester);
     setSelectedCourse(null);
-    setSelectedTopics([]);
+    setSelectedTopic(null);
     setCourses(semester === 'First Semester' ? FIRST_SEMESTER_COURSES : SECOND_SEMESTER_COURSES);
     setStep(2);
   };
 
   const handleCourseSelect = async (courseCode: string) => {
     setSelectedCourse(courseCode);
-    setSelectedTopics([]);
+    setSelectedTopic(null);
     setLoading(true);
     try {
-      const { data, error } = await supabase
+      if (!supabase) return;
+      const { data: exams, error: examsErr } = await supabase
         .from('cbt_exams')
-        .select('topic')
-        .eq('course_code', courseCode)
+        .select('id, course_code, topic')
         .eq('is_published', true);
-      
-      if (!error && data) {
-        const uniqueTopics = Array.from(new Set(data.map(d => d.topic))).filter(Boolean) as string[];
-        setTopics(uniqueTopics);
+
+      if (examsErr) throw examsErr;
+
+      const normalizedRequested = courseCode.replace(/\s+/g, '').toLowerCase();
+      const matchedExams = (exams || []).filter(e => {
+        if (!e.course_code) return false;
+        return e.course_code.replace(/\s+/g, '').toLowerCase() === normalizedRequested;
+      });
+
+      const examIds = matchedExams.map(e => e.id);
+
+      if (examIds.length > 0) {
+        const { data: questions, error: qErr } = await supabase
+          .from('cbt_questions')
+          .select('topic')
+          .in('exam_id', examIds);
+
+        if (!qErr && questions) {
+          const topicMap: Record<string, number> = {};
+
+          matchedExams.forEach(e => {
+            if (e.topic) {
+              const t = e.topic.trim();
+              if (t) topicMap[t] = (topicMap[t] || 0) + 1;
+            }
+          });
+
+          questions.forEach((q: any) => {
+            const t = q.topic ? q.topic.trim() : '';
+            const key = (!t || t.toLowerCase() === 'general') ? 'Uncategorized' : t;
+            topicMap[key] = (topicMap[key] || 0) + 1;
+          });
+
+          const formattedTopics = Object.entries(topicMap).map(([name, count]) => ({ name, count }));
+          setTopicsWithCounts(formattedTopics);
+        } else {
+          setTopicsWithCounts([]);
+        }
       } else {
-        setTopics([]);
+        setTopicsWithCounts([]);
       }
     } catch (err) {
       console.error(err);
-      setTopics([]);
+      setTopicsWithCounts([]);
     } finally {
       setLoading(false);
       setStep(3);
     }
   };
 
-  const toggleTopic = (topic: string) => {
-    setSelectedTopics(prev => 
-      prev.includes(topic) ? prev.filter(t => t !== topic) : [...prev, topic]
-    );
-  };
-
   const startDrill = () => {
     onStartDrill({
       courseCode: selectedCourse,
-      topics: selectedTopics,
+      mode: practiceMode,
+      topic: practiceMode === 'topic' ? selectedTopic : undefined,
       count: questionCount,
       timed: isTimed,
       time: timeMinutes
@@ -113,7 +149,7 @@ export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewA
           </button>
           <div>
             <h1 className="text-3xl font-display font-bold text-white">Undergraduate CBT Drilling</h1>
-            <p className="text-slate-400">Master your semester courses with targeted practice sessions</p>
+            <p className="text-slate-400">Master your semester courses with random or topic-based practice sessions</p>
           </div>
         </div>
         {onViewAnalytics && (
@@ -231,51 +267,116 @@ export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewA
             className="grid grid-cols-1 lg:grid-cols-3 gap-8"
           >
             <div className="lg:col-span-2 space-y-6">
-              <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                <span className="flex items-center justify-center w-8 h-8 rounded-full bg-amber-500/20 text-amber-500 text-sm">3</span>
-                Select Topics ({selectedCourse})
-              </h2>
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                  <span className="flex items-center justify-center w-8 h-8 rounded-full bg-amber-500/20 text-amber-500 text-sm">3</span>
+                  Practice Mode ({selectedCourse})
+                </h2>
+              </div>
 
+              {/* Mode Selection Tabs */}
+              <div className="grid grid-cols-2 gap-4">
+                <button
+                  onClick={() => { setPracticeMode('random'); setSelectedTopic(null); }}
+                  className={`p-5 rounded-2xl border text-left transition-all flex flex-col justify-between ${
+                    practiceMode === 'random'
+                      ? 'bg-amber-500/10 border-amber-500 text-white shadow-lg'
+                      : 'bg-[#0f172a] border-slate-800 text-slate-400 hover:bg-slate-900'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-3">
+                    <div className={`p-2.5 rounded-xl ${practiceMode === 'random' ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-300'}`}>
+                      <Shuffle size={20} />
+                    </div>
+                    {practiceMode === 'random' && <span className="text-xs font-bold text-amber-400 bg-amber-500/20 px-2.5 py-1 rounded-full">Active</span>}
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-white mb-1">Random CBT</h3>
+                    <p className="text-xs text-slate-400">Practice with randomly selected questions from across the entire course.</p>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => setPracticeMode('topic')}
+                  className={`p-5 rounded-2xl border text-left transition-all flex flex-col justify-between ${
+                    practiceMode === 'topic'
+                      ? 'bg-amber-500/10 border-amber-500 text-white shadow-lg'
+                      : 'bg-[#0f172a] border-slate-800 text-slate-400 hover:bg-slate-900'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-3">
+                    <div className={`p-2.5 rounded-xl ${practiceMode === 'topic' ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-300'}`}>
+                      <ListTree size={20} />
+                    </div>
+                    {practiceMode === 'topic' && <span className="text-xs font-bold text-amber-400 bg-amber-500/20 px-2.5 py-1 rounded-full">Active</span>}
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-white mb-1">Topic-by-Topic CBT</h3>
+                    <p className="text-xs text-slate-400">Choose a specific course topic and focus your practice.</p>
+                  </div>
+                </button>
+              </div>
+
+              {/* Conditional Content based on mode */}
               <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-medium text-slate-300">Available Topics</h3>
-                  {topics.length > 0 && (
-                    <button 
-                      onClick={() => setSelectedTopics(selectedTopics.length === topics.length ? [] : [...topics])}
-                      className="text-sm text-amber-500 hover:text-amber-400 font-medium"
-                    >
-                      {selectedTopics.length === topics.length ? 'Deselect All' : 'Select All'}
-                    </button>
-                  )}
-                </div>
-
-                {loading ? (
-                   <div className="flex justify-center py-8"><div className="animate-spin h-6 w-6 border-4 border-amber-500 border-t-transparent rounded-full"></div></div>
-                ) : topics.length > 0 ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {topics.map(topic => (
-                      <button
-                        key={topic}
-                        onClick={() => toggleTopic(topic)}
-                        className={`p-4 rounded-xl border flex items-center gap-3 transition-colors text-left ${
-                          selectedTopics.includes(topic) 
-                            ? 'bg-amber-500/10 border-amber-500/50 text-amber-400' 
-                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800'
-                        }`}
-                      >
-                        <div className={`w-5 h-5 rounded-md border flex items-center justify-center ${
-                          selectedTopics.includes(topic) ? 'bg-amber-500 border-amber-500' : 'border-slate-600'
-                        }`}>
-                          {selectedTopics.includes(topic) && <span className="text-[#0f172a] text-xs font-bold">✓</span>}
-                        </div>
-                        <span className="line-clamp-2">{topic}</span>
-                      </button>
-                    ))}
+                {practiceMode === 'random' ? (
+                  <div className="space-y-4 py-4 text-center sm:text-left">
+                    <div className="flex items-center gap-4 bg-slate-900/60 p-5 rounded-xl border border-slate-800">
+                      <div className="p-3 bg-amber-500/10 text-amber-400 rounded-xl hidden sm:block">
+                        <Shuffle size={24} />
+                      </div>
+                      <div>
+                        <h4 className="text-white font-bold mb-1">Randomized Course Drill</h4>
+                        <p className="text-sm text-slate-400">Questions will be randomly pulled from all available database records for <span className="text-amber-400 font-semibold">{selectedCourse}</span> without duplication.</p>
+                      </div>
+                    </div>
                   </div>
                 ) : (
-                  <div className="text-center py-8 bg-slate-900/50 rounded-xl border border-slate-800/80 p-6">
-                    <p className="text-slate-300 font-medium mb-1">Full Course Drill Ready</p>
-                    <p className="text-xs text-slate-400">No specific topic tags found. You can start drilling all questions for {selectedCourse}.</p>
+                  <div>
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="font-medium text-slate-300">Available Topics</h3>
+                      <span className="text-xs text-slate-400">Select one topic</span>
+                    </div>
+
+                    {loading ? (
+                      <div className="flex justify-center py-8"><div className="animate-spin h-6 w-6 border-4 border-amber-500 border-t-transparent rounded-full"></div></div>
+                    ) : topicsWithCounts.length > 0 ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {topicsWithCounts.map(topic => (
+                          <button
+                            key={topic.name}
+                            onClick={() => setSelectedTopic(topic.name)}
+                            className={`p-4 rounded-xl border flex items-center justify-between transition-colors text-left ${
+                              selectedTopic === topic.name
+                                ? 'bg-amber-500/10 border-amber-500 text-amber-400'
+                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800'
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className={`w-5 h-5 rounded-full border flex items-center justify-center ${
+                                selectedTopic === topic.name ? 'bg-amber-500 border-amber-500 text-slate-950 font-bold text-xs' : 'border-slate-600'
+                              }`}>
+                                {selectedTopic === topic.name && '✓'}
+                              </div>
+                              <span className="line-clamp-1 font-medium">{topic.name}</span>
+                            </div>
+                            <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-bold">{topic.count} q</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-center py-8 bg-slate-900/50 rounded-xl border border-slate-800/80 p-6">
+                        <AlertCircle className="mx-auto mb-2 text-amber-400 opacity-80" size={32} />
+                        <p className="text-slate-300 font-medium mb-1">No specific topics categorized yet</p>
+                        <p className="text-xs text-slate-400 mb-4">You can still practice all course questions using Random CBT mode.</p>
+                        <button
+                          onClick={() => setPracticeMode('random')}
+                          className="px-4 py-2 bg-amber-500 text-slate-950 rounded-xl text-xs font-bold hover:bg-amber-400 transition-colors"
+                        >
+                          Switch to Random CBT
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -298,6 +399,12 @@ export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewA
                       onChange={(e) => setQuestionCount(parseInt(e.target.value))}
                       className="w-full accent-amber-500"
                     />
+                    <div className="flex justify-between text-xs text-slate-500 mt-1">
+                      <span>10</span>
+                      <span>30</span>
+                      <span>50</span>
+                      <span>100</span>
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-between">
@@ -329,14 +436,14 @@ export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewA
 
                 <button
                   onClick={startDrill}
-                  disabled={topics.length > 0 && selectedTopics.length === 0}
-                  className="w-full py-4 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed text-[#0f172a] rounded-xl font-bold transition-colors flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20"
+                  disabled={practiceMode === 'topic' && !selectedTopic}
+                  className="w-full py-4 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-[#0f172a] rounded-xl font-bold transition-colors flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20"
                 >
                   <Play size={20} />
-                  Start Drill Now
+                  {practiceMode === 'random' ? 'Start Random CBT' : 'Start Topic CBT'}
                 </button>
-                {topics.length > 0 && selectedTopics.length === 0 && (
-                  <p className="text-xs text-center text-rose-400 mt-3">Please select at least one topic.</p>
+                {practiceMode === 'topic' && !selectedTopic && (
+                  <p className="text-xs text-center text-rose-400 mt-3">Please select a topic to start Topic CBT.</p>
                 )}
               </div>
             </div>

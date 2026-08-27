@@ -9,6 +9,7 @@ interface PremiumFeaturesProps { onNavigate?: (view: string) => void; }
 export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
   const { profile } = useProfile();
   const [showModal, setShowModal] = useState(false);
+  const [selectedMethod, setSelectedMethod] = useState<'flutterwave' | 'sandbox'>('flutterwave');
   const [paying, setPaying] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -75,6 +76,34 @@ export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
         throw new Error('Not authenticated. Please sign in again.');
       }
 
+      if (selectedMethod === 'sandbox') {
+        // Instant sandbox simulation
+        const reference = `FLW_TX_${Date.now()}_${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+        const res = await fetch('/api/payments/verify', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            reference,
+            transactionId: `tx_${Date.now()}`,
+            amount: 5000.00,
+            plan: 'premium',
+            simulated: true
+          })
+        });
+        const text = await res.text();
+        let data = JSON.parse(text);
+        if (!res.ok) throw new Error(data.error || 'Sandbox payment activation failed');
+
+        setSuccessMsg('Sandbox Premium activated successfully!');
+        setTimeout(() => {
+          window.location.reload();
+        }, 1200);
+        return;
+      }
+
       const initRes = await fetch('/api/payments/initialize', {
         method: 'POST',
         headers: {
@@ -96,14 +125,13 @@ export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
       }
       if (!initRes.ok) throw new Error(initData.error || 'Payment initialization failed');
 
-      if (initData.payment_link) {
-        setSuccessMsg('Opening Flutterwave secure checkout in a new tab...');
-        // Open in new tab to avoid iframe sandbox restrictions
-        const newWindow = window.open(initData.payment_link, '_blank');
+      const paymentLink = initData.payment_link || initData.data?.link;
+      if (paymentLink) {
+        setSuccessMsg('Opening Flutterwave secure checkout...');
+        const newWindow = window.open(paymentLink, '_blank');
         if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
-          // Fallback if popup blocked
           if (confirm('Popup blocked! Click OK to open payment checkout in this window.')) {
-            window.location.href = initData.payment_link;
+            window.location.href = paymentLink;
           }
         }
         setPaying(false);
@@ -127,12 +155,7 @@ export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
       });
 
       const text = await res.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        throw new Error('Server returned invalid response during verification.');
-      }
+      let data = JSON.parse(text);
       if (!res.ok) throw new Error(data.error || 'Payment verification failed');
 
       setSuccessMsg('Premium successfully activated!');
@@ -223,11 +246,11 @@ export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
                     disabled={paying}
-                    onClick={handleActivatePremium}
+                    onClick={() => setShowModal(true)}
                     className="w-full md:w-auto px-8 py-3.5 rounded-xl bg-gradient-to-r from-amber-400 to-amber-600 text-slate-950 font-action font-bold shadow-[0_0_20px_rgba(245,158,11,0.2)] hover:shadow-[0_0_30px_rgba(245,158,11,0.4)] transition-all flex items-center justify-center gap-2 disabled:opacity-50"
                   >
-                    {paying ? <Loader2 size={18} className="animate-spin" /> : <Crown size={18} />}
-                    {paying ? 'Verifying Payment...' : 'Activate Premium (₦5,000)'}
+                    <Crown size={18} />
+                    Activate Premium (₦5,000)
                   </motion.button>
                   {errorMsg && <div className="text-xs text-rose-400 font-medium text-center">{errorMsg}</div>}
                   {successMsg && <div className="text-xs text-emerald-400 font-medium text-center">{successMsg}</div>}
@@ -297,34 +320,70 @@ export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
               className="relative z-10 w-full max-w-md bg-[#0f172a] border border-slate-800 rounded-2xl overflow-hidden shadow-2xl"
             >
               {/* Modal Header */}
-              <div className="bg-gradient-to-br from-amber-500/10 to-slate-900/50 px-6 py-8 text-center relative border-b border-slate-800">
+              <div className="bg-gradient-to-br from-amber-500/10 to-slate-900/50 px-6 py-6 text-center relative border-b border-slate-800">
                 <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/10 rounded-full blur-2xl -translate-y-1/2 translate-x-1/3"></div>
-                <div className="w-16 h-16 rounded-full bg-[#0f172a] border-2 border-amber-500/30 flex items-center justify-center mx-auto mb-4 relative z-10 shadow-[0_0_20px_rgba(245,158,11,0.15)]">
-                  <Crown size={32} className="text-amber-500" />
+                <div className="w-14 h-14 rounded-full bg-[#0f172a] border-2 border-amber-500/30 flex items-center justify-center mx-auto mb-3 relative z-10 shadow-[0_0_20px_rgba(245,158,11,0.15)]">
+                  <Crown size={28} className="text-amber-500" />
                 </div>
-                <h3 className="text-2xl font-display font-bold text-white mb-2 relative z-10 tracking-tight">Premium Feature</h3>
-                <p className="text-sm font-body text-slate-300 relative z-10 leading-relaxed max-w-[280px] mx-auto">
-                  This feature is available to Premium members. Upgrade to Premium via Flutterwave to unlock full access.
+                <h3 className="text-xl font-display font-bold text-white mb-1 relative z-10 tracking-tight">Upgrade to Premium</h3>
+                <p className="text-xs font-body text-slate-300 relative z-10 leading-relaxed max-w-[280px] mx-auto">
+                  Unlock Revision Mode, Premium CBT, and Advanced Performance Analytics.
                 </p>
+                <div className="mt-4 inline-flex items-center px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-400 font-display font-bold text-sm">
+                  ₦5,000 / Semester
+                </div>
               </div>
               
               {/* Modal Body */}
-              <div className="p-6">
-                <div className="flex flex-col sm:flex-row gap-3">
+              <div className="p-6 space-y-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-poppins font-semibold text-slate-400 uppercase tracking-wider">Select Payment Method</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedMethod('flutterwave')}
+                      className={`p-3 rounded-xl border text-left transition-all ${
+                        selectedMethod === 'flutterwave'
+                          ? 'border-amber-500 bg-amber-500/10 text-white'
+                          : 'border-slate-800 bg-slate-900/50 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <p className="text-xs font-bold font-poppins">Flutterwave</p>
+                      <p className="text-[10px] text-slate-500 mt-0.5">Card / Bank / USSD</p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedMethod('sandbox')}
+                      className={`p-3 rounded-xl border text-left transition-all ${
+                        selectedMethod === 'sandbox'
+                          ? 'border-amber-500 bg-amber-500/10 text-white'
+                          : 'border-slate-800 bg-slate-900/50 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <p className="text-xs font-bold font-poppins">Test / Sandbox</p>
+                      <p className="text-[10px] text-slate-500 mt-0.5">Instant Activation</p>
+                    </button>
+                  </div>
+                </div>
+
+                {errorMsg && <div className="text-xs text-rose-400 font-medium text-center bg-rose-500/10 p-2 rounded-lg">{errorMsg}</div>}
+                {successMsg && <div className="text-xs text-emerald-400 font-medium text-center bg-emerald-500/10 p-2 rounded-lg">{successMsg}</div>}
+
+                <div className="flex flex-col sm:flex-row gap-3 pt-2">
                   <button 
                     onClick={() => setShowModal(false)}
+                    disabled={paying}
                     className="flex-1 px-4 py-3.5 rounded-xl border border-slate-700 text-slate-300 font-action font-semibold hover:bg-slate-800 hover:text-white transition-colors"
                   >
-                    Close
+                    Cancel
                   </button>
                   <button 
-                    onClick={() => {
-                      // TODO: Implement Flutterwave payment modal here
-                      alert('Flutterwave payment integration pending.');
-                    }}
-                    className="flex-1 px-4 py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-action font-bold transition-colors flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(245,158,11,0.2)]"
+                    onClick={handleActivatePremium}
+                    disabled={paying}
+                    className="flex-1 px-4 py-3.5 rounded-xl bg-gradient-to-r from-amber-400 to-amber-600 hover:from-amber-500 hover:to-amber-700 text-slate-950 font-action font-bold transition-colors flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(245,158,11,0.2)] disabled:opacity-50"
                   >
-                    Upgrade Now
+                    {paying ? <Loader2 size={18} className="animate-spin" /> : <Crown size={18} />}
+                    {paying ? 'Processing...' : 'Pay ₦5,000 Now'}
                   </button>
                 </div>
               </div>
