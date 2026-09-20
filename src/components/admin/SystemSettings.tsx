@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Settings, Globe, BookOpen, Clock, Award, Users, Bell, Save, CheckCircle2, AlertCircle, RefreshCw, ShieldAlert, ToggleLeft, ToggleRight, Cpu, HardDrive, Key, Activity, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { supabase } from '../../supabaseClient';
+import { refreshGeneralSettings } from '../../lib/platformSettings';
 
 export default function SystemSettings() {
   const [activeTab, setActiveTab] = useState<'general' | 'academic' | 'cbt' | 'premium' | 'partnership' | 'notification' | 'features' | 'health'>('general');
@@ -200,6 +201,13 @@ export default function SystemSettings() {
 
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || 'Failed to save settings');
+
+      // General settings drive the maintenance gate and the public branding, so
+      // the shared store is refreshed from the database rather than patched —
+      // the app-wide gate then reflects the saved value on the next render.
+      if (category === 'general') {
+        await refreshGeneralSettings();
+      }
 
       setSuccessMsg(`${category.charAt(0).toUpperCase() + category.slice(1)} settings updated successfully!`);
       setUnsavedChanges(false);

@@ -1,3 +1,8 @@
+// Load env files explicitly: .env.local holds the real values, .env is the fallback.
+// override:false means already-set real environment variables always win over the files.
+import dotenv from 'dotenv';
+dotenv.config({ path: ['.env.local', '.env'], override: false });
+
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
@@ -8,13 +13,90 @@ import { createRequire } from 'module';
 const require = createRequire(typeof __filename !== 'undefined' ? __filename : (typeof import.meta !== 'undefined' && import.meta.url ? import.meta.url : process.cwd()));
 // @ts-ignore
 const { PDFParse } = require('pdf-parse');
-
-import 'dotenv/config';
+import { extractQuestionsFromText } from './server/pdfQuestionExtractor';
+import {
+  generateExplanations,
+  resolveExplanationEngine,
+  DEFAULT_EXPLANATION_BATCH_SIZE,
+} from './server/explanationGenerator';
 
 // Load Supabase configuration with safe fallbacks
 const supabaseUrl = process.env.VITE_SUPABASE_URL || 'https://placeholder.supabase.co';
-const supabaseKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || 'placeholder-key';
-const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Explicit fallback order: publishable key wins when non-empty, then anon, then placeholder.
+// An empty VITE_SUPABASE_ANON_KEY is falsy, so it can never mask a populated publishable key.
+const supabaseKeySource: 'publishable' | 'anon' | 'placeholder' =
+  process.env.VITE_SUPABASE_PUBLISHABLE_KEY ? 'publishable'
+    : process.env.VITE_SUPABASE_ANON_KEY ? 'anon'
+      : 'placeholder';
+const supabaseKey =
+  supabaseKeySource === 'publishable' ? (process.env.VITE_SUPABASE_PUBLISHABLE_KEY as string)
+    : supabaseKeySource === 'anon' ? (process.env.VITE_SUPABASE_ANON_KEY as string)
+      : 'placeholder-key';
+
+// Single shared factory: every Supabase client in this file is built here, so a missing
+// URL/key degrades to the placeholder instead of throwing "supabaseUrl is required".
+function createSupabaseClient(options?: Parameters<typeof createClient>[2]) {
+  return createClient(supabaseUrl, supabaseKey, options);
+}
+
+const supabase = createSupabaseClient();
+
+/**
+ * The ONE model the PDF→UTME-CBT importer is allowed to use.
+ *
+ * Single source of truth on purpose. The importer previously carried a
+ * "models to try" list, which meant a transient failure on one model silently
+ * switched the request to a different one mid-import — so the model actually
+ * used was not knowable from the code. It is exported on /api/health so the
+ * RUNNING process can be checked, not just the source file.
+ */
+const PDF_IMPORT_MODEL = 'gemini-3.6-flash';
+
+/**
+ * The HOSTED model used for the OPTIONAL explanation stage of the PDF importer,
+ * when no local model is serving it.
+ *
+ * The explanation stage is local-first: `resolveExplanationEngine` prefers a
+ * running Ollama server (plain HTTP from Node — no Python, no sidecar) and only
+ * falls back to Gemini when there is no local model. This name is therefore the
+ * fallback, not the default path. It stays env-configurable because the model
+ * that explains questions is a separate operational decision from the model that
+ * parses a document. `GEMINI_EXPLANATION_MODEL` wins; `GEMINI_MODEL` is honoured
+ * as a general fallback; otherwise the importer's model is used.
+ */
+const EXPLANATION_MODEL =
+  process.env.GEMINI_EXPLANATION_MODEL || process.env.GEMINI_MODEL || PDF_IMPORT_MODEL;
+
+/** Ollama endpoint, reported on /api/health so the configured target is visible. */
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+
+/** 'auto' (local-first) unless explicitly forced. */
+const EXPLANATION_PROVIDER = (process.env.EXPLANATION_PROVIDER || 'auto').toLowerCase();
+
+/**
+ * How many questions travel in one explanation request. Batching is what keeps
+ * request count proportional to batches rather than to questions — the fix for
+ * the old per-chunk/per-question quota exhaustion. Exposed so a deployment can
+ * tune the requests-vs-latency trade-off without a rebuild.
+ */
+const EXPLANATION_BATCH_SIZE = (() => {
+  const parsed = Number.parseInt(process.env.GEMINI_EXPLANATION_BATCH_SIZE || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_EXPLANATION_BATCH_SIZE;
+})();
+
+// Startup diagnostics: length-only, never logs secret material.
+console.log(`Supabase key source: ${supabaseKeySource}`);
+console.log(`PDF import model: ${PDF_IMPORT_MODEL}`);
+console.log(
+  `PDF explanation: provider=${EXPLANATION_PROVIDER} ` +
+  `ollama=${OLLAMA_BASE_URL}${process.env.OLLAMA_MODEL ? ` model=${process.env.OLLAMA_MODEL}` : ''} ` +
+  `geminiFallback=${EXPLANATION_MODEL} (batch size ${EXPLANATION_BATCH_SIZE})`,
+);
+for (const key of ['VITE_SUPABASE_URL', 'VITE_SUPABASE_PUBLISHABLE_KEY', 'VITE_SUPABASE_ANON_KEY', 'GEMINI_API_KEY']) {
+  const value = process.env[key] ?? '';
+  console.log(`${key}: present=${value.length > 0 ? 'yes' : 'no'} length=${value.length}`);
+}
 
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception on server:', err);
@@ -45,6 +127,19 @@ async function startServer() {
     res.json({
       ok: true,
       server: 'backend',
+      // Proves which model THIS process will use for PDF import. If this does
+      // not read 'gemini-2.5-flash', the running server predates the source and
+      // needs restarting — `npm run dev` runs tsx with no hot reload.
+      pdfImportModel: PDF_IMPORT_MODEL,
+      // The explanation stage's configuration, so the RUNNING process can be
+      // checked without reading the source (same reason as pdfImportModel).
+      // `explanationProvider: 'auto'` means local-first: a running Ollama wins,
+      // Gemini is only the fallback.
+      explanationProvider: EXPLANATION_PROVIDER,
+      ollamaBaseUrl: OLLAMA_BASE_URL,
+      ollamaModel: process.env.OLLAMA_MODEL || null,
+      explanationModel: EXPLANATION_MODEL,
+      explanationBatchSize: EXPLANATION_BATCH_SIZE,
       timestamp: new Date().toISOString()
     });
   });
@@ -223,7 +318,7 @@ ${(content || '').substring(0, 10000)}`;
           return res.status(401).json({ error: 'Missing authorization header' });
         }
 
-        const sb = createClient(supabaseUrl, supabaseKey, {
+        const sb = createSupabaseClient({
           global: { headers: { Authorization: authHeader } }
         });
 
@@ -259,6 +354,157 @@ ${(content || '').substring(0, 10000)}`;
           return res.status(400).json({ error: 'Please upload a valid PDF file containing readable text or provide text.' });
         }
 
+        // ---- LOCAL-FIRST EXTRACTION ---------------------------------------
+        // Question boundaries are a deterministic text pattern, not a semantic
+        // problem, so parse them locally BEFORE spending any AI quota. If this
+        // yields questions we return immediately and Gemini is never called.
+        // The AI path below is unchanged and still runs for any PDF this cannot
+        // parse, so this can only reduce API usage — never remove a capability.
+        const localResult = extractQuestionsFromText(pdfText);
+        console.log(
+          `[PDF Import] LOCAL pass (no AI call): ${localResult.questions.length} question(s), ` +
+          `answerKey=${localResult.answerKeyFound}, starts=${localResult.stats.numberedStarts}, ` +
+          `options=${localResult.stats.optionsFound}`,
+        );
+
+        if (localResult.questions.length > 0) {
+          const localSeen = new Set<string>();
+          const localUnique = localResult.questions.filter((q) => {
+            const key = q.question_text.trim().toLowerCase();
+            if (!key || localSeen.has(key)) return false;
+            localSeen.add(key);
+            return true;
+          });
+
+          console.log(`[PDF Import] Local extraction complete: ${localUnique.length} questions`);
+
+          if (localResult.answerKeyFound) {
+            console.log(`[PDF Import] answer key applied to ${localResult.stats.answerKeyEntries} question(s).`);
+          } else {
+            console.log('[PDF Import] no answer key in the PDF — answers left blank for admin review, not guessed.');
+          }
+
+          // Questions as they will be returned. Explanation fields are filled in
+          // by the stage below; nothing here depends on it having run.
+          const shaped = localUnique.map((q) => ({
+            question_text: q.question_text,
+            option_a: q.option_a,
+            option_b: q.option_b,
+            option_c: q.option_c,
+            option_d: q.option_d,
+            // Deliberately null when the PDF carried no answer key. The admin
+            // sees it as needing review rather than being shown a guess.
+            correct_option: q.correct_option,
+            explanation: q.explanation,
+            // Explanation state is tracked SEPARATELY from question state: a
+            // question with a good answer key is still publishable even if its
+            // explanation could not be written.
+            explanation_needs_review: false,
+            review_note: '',
+            topic: 'General',
+            difficulty: 'medium',
+            marks: 1,
+            // Only pre-approve what actually has an answer. A question with no
+            // key must be reviewed before it can be saved.
+            approved: !q.needs_review,
+            needs_review: q.needs_review,
+            answer_source: q.answer_source,
+            page_number: q.page_number,
+          }));
+
+          // ---- OPTIONAL EXPLANATION STAGE ----------------------------------
+          // Runs strictly AFTER extraction, and only for questions that already
+          // have a known answer. It is additive: every branch below ends with the
+          // same questions returned, so an AI outage degrades explanation quality
+          // and nothing else — explanations are never a prerequisite for saving.
+          const wantsExplanations =
+            String(req.body?.generateExplanations ?? 'true').toLowerCase() !== 'false';
+          const explainable = shaped.filter((q) => q.correct_option).length;
+          let explanationSummary = { generated: 0, needsReview: 0, engine: null as string | null };
+
+          // Every "no explanation was written" path funnels through here, so the
+          // questions are always returned intact with a reason attached.
+          const flagExplanationsForReview = (note: string) => {
+            shaped.forEach((q) => {
+              if (q.explanation) return;
+              q.explanation_needs_review = true;
+              q.review_note = q.correct_option
+                ? note
+                : 'No answer key for this question yet — supply an answer, then generate its explanation.';
+            });
+          };
+
+          if (!wantsExplanations) {
+            console.log('[PDF Import] explanation generation skipped (disabled for this import).');
+            flagExplanationsForReview('Explanation generation was switched off for this import.');
+          } else if (explainable === 0) {
+            console.log('[PDF Import] no question has an answer key — nothing to explain yet.');
+            flagExplanationsForReview('No answer key for this question yet.');
+          } else {
+            try {
+              const resolved = await resolveExplanationEngine();
+              if (!resolved.engine) {
+                // Nothing available is NORMAL, not an error: the questions are
+                // already extracted and saveable, they just lack explanations.
+                console.warn(
+                  `[PDF Import] no explanation engine available (${resolved.reason}) — ` +
+                  `questions kept, explanations flagged for review.`,
+                );
+                flagExplanationsForReview(`No explanation service available: ${resolved.reason}.`);
+              } else {
+                console.log(
+                  `[PDF Import] explanation engine: ${resolved.engine.provider} ` +
+                  `(model ${resolved.engine.model}) via ${resolved.reason}`,
+                );
+                explanationSummary.engine = `${resolved.engine.provider}:${resolved.engine.model}`;
+
+                const run = await generateExplanations(resolved.engine, shaped, {
+                  batchSize: EXPLANATION_BATCH_SIZE,
+                  onProgress: (message) => console.log(`[PDF Import] ${message}`),
+                });
+
+                run.results.forEach((result) => {
+                  const target = shaped[result.index];
+                  if (!target) return;
+                  target.explanation = result.explanation;
+                  target.explanation_needs_review = result.needs_review;
+                  target.review_note = result.review_note || '';
+                });
+
+                explanationSummary.generated = run.stats.generated;
+                explanationSummary.needsReview = run.stats.needsReview;
+                console.log(`[PDF Import] Explanations generated: ${run.stats.generated}/${explainable}`);
+                if (run.stats.needsReview > 0) {
+                  console.warn(
+                    `[PDF Import] ${run.stats.needsReview} question(s) still need an explanation — ` +
+                    `they are kept in the preview and flagged for review, not discarded.`,
+                  );
+                }
+                if (run.stats.stoppedEarly) {
+                  console.warn(`[PDF Import] explanation run stopped early — ${run.stats.stopReason}`);
+                }
+              }
+            } catch (explainErr: any) {
+              // A crash in the explanation stage must never cost the import.
+              console.error('[PDF Import] explanation stage failed:', explainErr);
+              flagExplanationsForReview(`Explanation generation failed: ${explainErr?.message || explainErr}`);
+            }
+          }
+          // ---- END OPTIONAL EXPLANATION STAGE ------------------------------
+
+          return res.status(200).json({
+            success: true,
+            extraction: 'local',
+            answerKeyFound: localResult.answerKeyFound,
+            warnings: localResult.warnings,
+            explanationEngine: explanationSummary.engine,
+            explanationsRequested: wantsExplanations,
+            explanationsGenerated: explanationSummary.generated,
+            questions: shaped,
+          });
+        }
+        // ---- END LOCAL-FIRST -----------------------------------------------
+
         const apiKey = process.env.GEMINI_API_KEY;
         if (!apiKey) {
           return res.status(500).json({ error: 'GEMINI_API_KEY is not configured.' });
@@ -282,6 +528,10 @@ ${(content || '').substring(0, 10000)}`;
         }
 
         let allQuestions: any[] = [];
+        // Chunks that failed for a real reason (API/model/network) vs. chunks
+        // the model genuinely read and found no questions in. Kept so the
+        // response can report the true cause instead of assuming an empty PDF.
+        const chunkFailures: { chunk: number; total: number; reason: string; retryable: boolean }[] = [];
         for (let i = 0; i < chunks.length; i++) {
           const chunk = chunks[i];
           const prompt = `
@@ -303,11 +553,19 @@ ${(content || '').substring(0, 10000)}`;
           `;
 
           let success = false;
-          const modelsToTry = ['gemini-3.6-flash'];
+          // Single entry, from the single source of truth. Never add a fallback
+          // model: switching models silently mid-import is the bug this replaced.
+          const modelsToTry = [PDF_IMPORT_MODEL];
+          console.log(`[PDF Import] Extracting with model: ${modelsToTry[0]}`);
+
+          // Sequential, not parallel: this loop already awaits one chunk before
+          // starting the next, so a large PDF cannot open a burst of concurrent
+          // Gemini requests and trip the rate limiter.
+          const MAX_ATTEMPTS = 4;
 
           for (const model of modelsToTry) {
             if (success) break;
-            for (let attempt = 1; attempt <= 3; attempt++) {
+            for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
               try {
                 const response = await ai.models.generateContent({
                   model,
@@ -317,27 +575,45 @@ ${(content || '').substring(0, 10000)}`;
                 const rawResponseText = response.text ? response.text.trim() : '';
                 const cleanedJson = rawResponseText.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '');
                 const parsedArray = JSON.parse(cleanedJson);
-                if (Array.isArray(parsedArray)) {
-                  allQuestions.push(...parsedArray);
-                  success = true;
-                  break;
+                if (!Array.isArray(parsedArray)) {
+                  throw new Error('Model returned valid JSON that was not an array of questions.');
                 }
+                allQuestions.push(...parsedArray);
+                success = true;
+                break;
               } catch (chunkErr: any) {
-                const errMessage = (chunkErr?.message || '').toLowerCase();
-                const isQuotaExceeded = errMessage.includes('429') || errMessage.includes('resource_exhausted') || errMessage.includes('quota') || chunkErr?.status === 429;
-                
-                if (isQuotaExceeded) {
-                  console.error('Gemini API quota exceeded (429 RESOURCE_EXHAUSTED). Stopping further processing.');
-                  return res.status(429).json({
-                    error: 'Gemini API quota exceeded',
-                    code: 'GEMINI_QUOTA_EXCEEDED'
-                  });
+                const status = chunkErr?.status ?? chunkErr?.code;
+                const errMessage = String(chunkErr?.message || '').toLowerCase();
+                const detail = `HTTP ${status ?? '?'} — ${chunkErr?.message || chunkErr}`;
+
+                // Transient conditions worth retrying. A 404 (model not available
+                // to this key) is deliberately NOT here: retrying it just burns
+                // time and still fails.
+                const retryable =
+                  status === 429 || status === 503 || status === 500 ||
+                  errMessage.includes('429') || errMessage.includes('resource_exhausted') ||
+                  errMessage.includes('503') || errMessage.includes('unavailable') ||
+                  errMessage.includes('overloaded') || errMessage.includes('timeout') ||
+                  errMessage.includes('econnreset') || errMessage.includes('fetch failed');
+
+                if (retryable && attempt < MAX_ATTEMPTS) {
+                  // Exponential backoff with jitter: ~2s, ~4s, ~8s.
+                  const waitMs = Math.pow(2, attempt) * 1000 + Math.floor(Math.random() * 500);
+                  console.warn(
+                    `[PDF Import] chunk ${i + 1}/${chunks.length} transient error (${detail}). ` +
+                    `Retrying in ${waitMs}ms — attempt ${attempt + 1}/${MAX_ATTEMPTS}.`,
+                  );
+                  await new Promise((resolve) => setTimeout(resolve, waitMs));
+                  continue;
                 }
 
-                console.warn(`Error processing chunk ${i + 1} with model ${model} (attempt ${attempt}):`, chunkErr?.message || chunkErr);
-                if (attempt < 3) {
-                  await new Promise(resolve => setTimeout(resolve, attempt * 1500));
-                }
+                // Terminal for THIS chunk only. The rest of the PDF continues;
+                // the reason is recorded so it can be reported accurately.
+                chunkFailures.push({ chunk: i + 1, total: chunks.length, reason: detail, retryable });
+                console.error(
+                  `[PDF Import] chunk ${i + 1}/${chunks.length} FAILED permanently — ${detail}`,
+                );
+                break;
               }
             }
           }
@@ -351,6 +627,21 @@ ${(content || '').substring(0, 10000)}`;
         }
 
         if (allQuestions.length === 0) {
+          // Distinguish "the model ran and genuinely found no questions" from
+          // "the model never ran". Reporting the former when the truth is the
+          // latter is what made a model/permission/quota failure look like an
+          // unreadable PDF.
+          if (chunkFailures.length > 0) {
+            const first = chunkFailures[0];
+            return res.status(502).json({
+              error:
+                `Gemini extraction failed on chunk ${first.chunk} of ${first.total}: ${first.reason}` +
+                (chunkFailures.length > 1 ? ` (and ${chunkFailures.length - 1} other chunk(s))` : ''),
+              code: 'GEMINI_EXTRACTION_FAILED',
+              model: PDF_IMPORT_MODEL,
+              failedChunks: chunkFailures,
+            });
+          }
           return res.status(400).json({ error: 'Gemini could not identify any valid questions in the uploaded document. Please check the PDF content.' });
         }
 
@@ -390,6 +681,73 @@ ${(content || '').substring(0, 10000)}`;
       }
     });
 
+    /**
+     * Retry/complete the explanation stage for a set of questions already on the
+     * review screen — the recovery path for a quota-limited or failed run, and
+     * the way a question that had NO answer key gets an explanation after the
+     * administrator supplies one.
+     *
+     * Same batching, same model source and same guarantees as the import stage:
+     * it returns one result per question, marks what it cannot explain for
+     * review, and reports its own progress in the same `[PDF Import]` form.
+     */
+    app.post('/api/cbt/generate-explanations', async (req, res) => {
+      try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader) {
+          return res.status(401).json({ error: 'Missing authorization header' });
+        }
+
+        const sb = createSupabaseClient({
+          global: { headers: { Authorization: authHeader } }
+        });
+        const { data: userResponse, error: userErr } = await sb.auth.getUser();
+        if (userErr || !userResponse?.user) {
+          return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+        }
+
+        const questions = Array.isArray(req.body?.questions) ? req.body.questions : [];
+        if (questions.length === 0) {
+          return res.status(400).json({ error: 'A non-empty "questions" array is required.' });
+        }
+        // Bounded so one call cannot become an unbounded AI run.
+        const MAX_QUESTIONS = 500;
+        if (questions.length > MAX_QUESTIONS) {
+          return res.status(400).json({ error: `Too many questions in one request (max ${MAX_QUESTIONS}).` });
+        }
+
+        const resolved = await resolveExplanationEngine();
+        if (!resolved.engine) {
+          // 503, not 500: the client keeps its questions and shows them as
+          // needing review. Nothing about the import depends on this succeeding.
+          return res.status(503).json({
+            error: `No explanation service is available (${resolved.reason}).`,
+            code: 'EXPLANATION_UNAVAILABLE',
+          });
+        }
+
+        const run = await generateExplanations(resolved.engine, questions, {
+          batchSize: EXPLANATION_BATCH_SIZE,
+          onProgress: (message) => console.log(`[PDF Import] ${message}`),
+        });
+
+        console.log(
+          `[PDF Import] Explanations generated: ${run.stats.generated}/${run.stats.generated + run.stats.needsReview}` +
+          (run.stats.skippedNoAnswer > 0 ? ` (${run.stats.skippedNoAnswer} question(s) still have no answer key)` : ''),
+        );
+
+        return res.status(200).json({
+          success: true,
+          explanationEngine: `${resolved.engine.provider}:${resolved.engine.model}`,
+          explanations: run.results,
+          stats: run.stats,
+        });
+      } catch (err: any) {
+        console.error('[PDF Import] explanation regeneration failed:', err);
+        return res.status(500).json({ error: err.message || 'Failed to generate explanations.' });
+      }
+    });
+
     app.post('/api/chat', async (req, res) => {
     try {
       
@@ -405,6 +763,12 @@ ${(content || '').substring(0, 10000)}`;
       let language = "English";
 
       let { messages, userRole, userId } = req.body;
+
+      // Guard: a malformed body must return 400, not crash with a 500 on
+      // messages.map() further down.
+      if (!Array.isArray(messages) || messages.length === 0) {
+        return res.status(400).json({ error: 'A non-empty "messages" array is required.' });
+      }
 
       // Implement temporary conversation memory - retain only last 10 messages
       if (messages && messages.length > 10) {
@@ -573,8 +937,7 @@ Instructions:
       const authHeader = req.headers.authorization;
       if (!authHeader) return res.status(401).json({ error: 'Missing authorization header' });
 
-      const { createClient } = await import('@supabase/supabase-js');
-      const sb = createClient(process.env.VITE_SUPABASE_URL as string, process.env.VITE_SUPABASE_PUBLISHABLE_KEY as string, {
+      const sb = createSupabaseClient({
         global: { headers: { Authorization: authHeader } }
       });
 
@@ -638,15 +1001,43 @@ Instructions:
         finalQuestions = finalQuestions.slice(0, reqLimit);
       }
 
-      // Create a drill session in DB
-      const { data: attempt, error: attemptErr } = await sb.from('cbt_attempts').insert({
-         exam_id: examIds[0],
-         user_id: userResponse.user.id,
-         status: 'in_progress',
-         answers: { question_ids: finalQuestions.map(q => q.id) }
-      }).select().single();
+      // One sitting = one attempt row.
+      //
+      // This endpoint is not naturally idempotent: React StrictMode remounts
+      // components in development, so the caller fires it twice for a single
+      // start, and any client retry would do the same in production. Each call
+      // used to INSERT its own row, so one real CBT was recorded as two and the
+      // dashboards counted both. An attempt that is still in progress for this
+      // user and exam is therefore reused rather than duplicated; a completed
+      // attempt is left alone so a genuine retake still creates a new row.
+      const { data: existingAttempt } = await sb.from('cbt_attempts')
+        .select('id')
+        .eq('user_id', userResponse.user.id)
+        .eq('exam_id', examIds[0])
+        .eq('status', 'in_progress')
+        .order('start_time', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-      if (attemptErr) throw attemptErr;
+      let attempt;
+      if (existingAttempt) {
+        const { data: reused, error: reuseErr } = await sb.from('cbt_attempts')
+          .update({ answers: { question_ids: finalQuestions.map(q => q.id) } })
+          .eq('id', existingAttempt.id)
+          .select()
+          .single();
+        if (reuseErr) throw reuseErr;
+        attempt = reused;
+      } else {
+        const { data: inserted, error: attemptErr } = await sb.from('cbt_attempts').insert({
+          exam_id: examIds[0],
+          user_id: userResponse.user.id,
+          status: 'in_progress',
+          answers: { question_ids: finalQuestions.map(q => q.id) }
+        }).select().single();
+        if (attemptErr) throw attemptErr;
+        attempt = inserted;
+      }
 
       res.json({ attemptId: attempt.id, questions: finalQuestions });
     } catch (err: any) {
@@ -661,8 +1052,7 @@ Instructions:
       const authHeader = req.headers.authorization;
       if (!authHeader) return res.status(401).json({ error: 'Missing authorization header' });
 
-      const { createClient } = await import('@supabase/supabase-js');
-      const sbClient = createClient(process.env.VITE_SUPABASE_URL as string, process.env.VITE_SUPABASE_PUBLISHABLE_KEY as string, {
+      const sbClient = createSupabaseClient({
         global: { headers: { Authorization: authHeader } }
       });
 
@@ -737,8 +1127,7 @@ Instructions:
       const authHeader = req.headers.authorization;
       if (!authHeader) return res.status(401).json({ error: 'Missing authorization header' });
 
-      const { createClient } = await import('@supabase/supabase-js');
-      const sb = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_PUBLISHABLE_KEY, {
+      const sb = createSupabaseClient({
         global: { headers: { Authorization: authHeader } }
       });
 
@@ -757,7 +1146,142 @@ Instructions:
     }
   });
 
-  
+
+  // POST-UTME Backend Routes
+  // postutme/PostUtmeDrillPage.tsx has always called these two endpoints, but
+  // neither existed — every Post-UTME drill therefore failed at "Start" with a
+  // 404 HTML fallback and the whole feature was dead. Implemented here to the
+  // exact shape the drill already consumes:
+  //   start  -> { attemptId, questions }
+  //   submit -> { score, totalCorrect, totalWrong, totalQuestions, results }
+  app.post('/api/post-utme/start', async (req, res) => {
+    try {
+      const { examId } = req.body;
+      const authHeader = req.headers.authorization;
+      if (!authHeader) return res.status(401).json({ error: 'Missing authorization header' });
+
+      const sb = createSupabaseClient({
+        global: { headers: { Authorization: authHeader } }
+      });
+
+      const { data: userResponse, error: userErr } = await sb.auth.getUser();
+      if (userErr || !userResponse?.user) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      if (!examId) return res.status(400).json({ error: 'Missing examId' });
+
+      // Unpublishing a paper must actually stop students taking it, not just
+      // hide it from the list. The drill only lists published papers, so this
+      // closes the gap where a retained examId could still start one.
+      const { data: exam } = await sb
+        .from('post_utme_exams')
+        .select('id, is_published')
+        .eq('id', examId)
+        .maybeSingle();
+
+      if (!exam || exam.is_published !== true) {
+        return res.status(403).json({ error: 'This paper is not available.' });
+      }
+
+      // correct_option is deliberately NOT selected — it is only read back at
+      // grading time in /submit, so the answer key never reaches the browser.
+      const { data: questions, error: qErr } = await sb.from('post_utme_questions')
+        .select('id, exam_id, question_text, option_a, option_b, option_c, option_d, marks, topic, difficulty')
+        .eq('exam_id', examId);
+
+      if (qErr) throw qErr;
+
+      const { data: attempt, error: attemptErr } = await sb.from('post_utme_attempts').insert({
+        exam_id: examId,
+        user_id: userResponse.user.id,
+        status: 'in_progress',
+        answers: { question_ids: (questions || []).map(q => q.id) }
+      }).select().single();
+
+      if (attemptErr) throw attemptErr;
+
+      res.json({ attemptId: attempt.id, questions: questions || [] });
+    } catch (err: any) {
+      console.error('[Post-UTME Start Error]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/post-utme/submit', async (req, res) => {
+    try {
+      const { attemptId, answers } = req.body;
+      const authHeader = req.headers.authorization;
+      if (!authHeader) return res.status(401).json({ error: 'Missing authorization header' });
+
+      const sb = createSupabaseClient({
+        global: { headers: { Authorization: authHeader } }
+      });
+
+      const { data: userResponse, error: userErr } = await sb.auth.getUser();
+      if (userErr || !userResponse?.user) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      if (!attemptId) return res.status(400).json({ error: 'Missing attemptId' });
+      const studentAnswers = answers || {};
+
+      const { data: attempt, error: attemptErr } = await sb.from('post_utme_attempts')
+        .select('*').eq('id', attemptId).single();
+      if (attemptErr) throw attemptErr;
+
+      const { data: questions, error: qErr } = await sb.from('post_utme_questions')
+        .select('*').eq('exam_id', attempt.exam_id);
+      if (qErr) throw qErr;
+
+      let totalCorrect = 0;
+      let totalWrong = 0;
+      let totalUnanswered = 0;
+      const results = [];
+
+      for (const q of (questions || [])) {
+        const studentAns = studentAnswers[q.id] || null;
+        const isCorrect = studentAns === q.correct_option;
+        if (!studentAns) totalUnanswered++;
+        else if (isCorrect) totalCorrect++;
+        else totalWrong++;
+
+        results.push({
+          id: q.id,
+          question_text: q.question_text,
+          option_a: q.option_a,
+          option_b: q.option_b,
+          option_c: q.option_c,
+          option_d: q.option_d,
+          student_answer: studentAns,
+          correct_option: q.correct_option,
+          explanation: q.explanation,
+          is_correct: isCorrect
+        });
+      }
+
+      const totalQuestions = (questions || []).length;
+      const score = totalQuestions > 0 ? Math.round((totalCorrect / totalQuestions) * 100) : 0;
+
+      const { error: updErr } = await sb.from('post_utme_attempts').update({
+        status: 'completed',
+        score,
+        total_correct: totalCorrect,
+        total_wrong: totalWrong,
+        answers: { question_ids: (questions || []).map(q => q.id), student_answers: studentAnswers },
+        end_time: new Date().toISOString()
+      }).eq('id', attemptId);
+
+      if (updErr) throw updErr;
+
+      res.json({ score, totalCorrect, totalWrong, totalUnanswered, totalQuestions, results });
+    } catch (err: any) {
+      console.error('[Post-UTME Submit Error]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+
   // UTME CBT Backend Routes
   app.post('/api/utme/start', async (req, res) => {
     try {
@@ -765,8 +1289,7 @@ Instructions:
       const authHeader = req.headers.authorization;
       if (!authHeader) return res.status(401).json({ error: 'Missing authorization header' });
 
-      const { createClient } = await import('@supabase/supabase-js');
-      const sb = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_PUBLISHABLE_KEY, {
+      const sb = createSupabaseClient({
         global: { headers: { Authorization: authHeader } }
       });
 
@@ -795,19 +1318,49 @@ Instructions:
         shuffled = shuffled.slice(0, count);
       }
 
-      // Create attempt record
+      // One sitting = one attempt row.
+      //
+      // This endpoint used to INSERT unconditionally. The caller fires it from a
+      // React effect, so StrictMode's mount/unmount/remount in development, a
+      // remount, or any retry produced a second (or third, ...) row for a single
+      // sitting — and UTMEDashboard's "CBT Taken Today" counts rows in this
+      // table, which is why one sitting was reported as many CBTs.
+      //
+      // An attempt for this student and subject that is still in progress is
+      // therefore reused. A completed attempt is left alone, so a genuine retake
+      // still creates a new row.
       const { data: userData } = await sb.auth.getUser();
       const userId = userData?.user?.id;
 
-      const { data: attempt, error: attemptErr } = await sb.from('utme_attempts').insert([{
-        student_id: userId,
-        subject_id: subjectId,
-        mode,
-        status: 'in_progress',
-        answers: { question_ids: shuffled.map(q => q.id) }
-      }]).select().single();
+      const { data: existingAttempt } = await sb.from('utme_attempts')
+        .select('id')
+        .eq('student_id', userId)
+        .eq('subject_id', subjectId)
+        .eq('status', 'in_progress')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-      if (attemptErr) throw attemptErr;
+      let attempt;
+      if (existingAttempt) {
+        const { data: reused, error: reuseErr } = await sb.from('utme_attempts')
+          .update({ answers: { question_ids: shuffled.map(q => q.id) } })
+          .eq('id', existingAttempt.id)
+          .select()
+          .single();
+        if (reuseErr) throw reuseErr;
+        attempt = reused;
+      } else {
+        const { data: inserted, error: attemptErr } = await sb.from('utme_attempts').insert([{
+          student_id: userId,
+          subject_id: subjectId,
+          mode,
+          status: 'in_progress',
+          answers: { question_ids: shuffled.map(q => q.id) }
+        }]).select().single();
+        if (attemptErr) throw attemptErr;
+        attempt = inserted;
+      }
 
       res.json({ attemptId: attempt.id, questions: shuffled });
     } catch (err) {
@@ -822,8 +1375,7 @@ Instructions:
       const authHeader = req.headers.authorization;
       if (!authHeader) return res.status(401).json({ error: 'Missing authorization header' });
 
-      const { createClient } = await import('@supabase/supabase-js');
-      const sb = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_PUBLISHABLE_KEY, {
+      const sb = createSupabaseClient({
         global: { headers: { Authorization: authHeader } }
       });
 
@@ -917,8 +1469,7 @@ Instructions:
       const authHeader = req.headers.authorization;
       if (!authHeader) return res.status(401).json({ error: 'Missing authorization header' });
 
-      const { createClient } = await import('@supabase/supabase-js');
-      const sb = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_PUBLISHABLE_KEY, {
+      const sb = createSupabaseClient({
         global: { headers: { Authorization: authHeader } }
       });
 
@@ -1019,8 +1570,7 @@ Instructions:
       const authHeader = req.headers.authorization;
       if (!authHeader) return res.status(401).json({ error: 'Missing authorization header' });
 
-      const { createClient } = await import('@supabase/supabase-js');
-      const sb = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_PUBLISHABLE_KEY, {
+      const sb = createSupabaseClient({
         global: { headers: { Authorization: authHeader } }
       });
 
@@ -1168,8 +1718,7 @@ Instructions:
           const amount = data.amount;
 
           if (customerEmail) {
-            const { createClient } = await import('@supabase/supabase-js');
-            const sbAdmin = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_PUBLISHABLE_KEY);
+            const sbAdmin = createSupabaseClient();
 
             const { data: profile } = await sbAdmin.from('profiles').select('id').eq('email', customerEmail).maybeSingle();
             if (profile) {
@@ -1246,7 +1795,9 @@ Instructions:
         return res.status(403).json({ error: 'Forbidden: Admin access required' });
       }
 
-      const { data: settings, error: settingsError } = await supabase.from('platform_settings').select('*');
+      // Use the caller's JWT so RLS evaluates this as `authenticated`, not `anon`.
+      const sbAdminCtx = createSupabaseClient({ global: { headers: { Authorization: authHeader } } });
+      const { data: settings, error: settingsError } = await sbAdminCtx.from('platform_settings').select('*');
       if (settingsError) throw settingsError;
 
       res.json({ settings: settings || [] });
@@ -1311,12 +1862,15 @@ Instructions:
         }
       }
 
+      // Use the caller's JWT so RLS evaluates this as `authenticated`, not `anon`.
+      const sbAdminCtx = createSupabaseClient({ global: { headers: { Authorization: authHeader } } });
+
       // Fetch old value for audit logging if possible
-      const { data: oldRecord } = await supabase.from('platform_settings').select('settings').eq('category', category).maybeSingle();
+      const { data: oldRecord } = await sbAdminCtx.from('platform_settings').select('settings').eq('category', category).maybeSingle();
       const oldValue = oldRecord ? oldRecord.settings : {};
 
       // Upsert settings
-      const { error: upsertError } = await supabase
+      const { error: upsertError } = await sbAdminCtx
         .from('platform_settings')
         .upsert([{
           category,
@@ -1327,16 +1881,19 @@ Instructions:
 
       if (upsertError) throw upsertError;
 
-      // Optional audit logging if audit table exists
-      try {
-        await supabase.from('audit_logs').insert([{
-          user_id: user.id,
-          action: 'UPDATE_PLATFORM_SETTING',
-          details: { category, old_value: oldValue, new_value: settings },
-          created_at: new Date().toISOString()
-        }]);
-      } catch (auditErr) {
-        // Audit log table might be optional or different, ignore if missing
+      // Audit logging. PostgREST returns errors rather than throwing, so the
+      // result is inspected explicitly — a silent catch here would hide a real
+      // failure. Logging never fails the settings save.
+      const { error: auditError } = await sbAdminCtx.from('audit_logs').insert([{
+        user_id: user.id,
+        performed_by: user.email || user.id,
+        action: 'UPDATE_PLATFORM_SETTING',
+        action_details: `Updated ${category} settings`,
+        details: { category, old_value: oldValue, new_value: settings },
+        created_at: new Date().toISOString()
+      }]);
+      if (auditError) {
+        console.warn('Audit log write skipped:', auditError.message);
       }
 
       res.json({ success: true, message: 'Settings updated successfully' });
@@ -1347,6 +1904,51 @@ Instructions:
   });
 
   // Extended System Health & Data Counts API
+  // System Health API (flat status shape)
+  // admin/SystemSettings.tsx:131 calls /api/admin/system-health and reads
+  // healthStatus.supabase_db / supabase_auth / supabase_storage /
+  // express_backend / gemini_ai / flutterwave, each either 'Connected' or
+  // 'Configuration Missing'. Only the -extended variant existed, so the Health
+  // tab in System Settings always reported "Failed to check system health".
+  app.get('/api/admin/system-health', async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
+      }
+      const token = authHeader.split(' ')[1];
+      const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+      if (authError || !user) {
+        return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+      }
+
+      const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle();
+      if (!profile || profile.role !== 'Admin') {
+        return res.status(403).json({ error: 'Forbidden: Admin access required' });
+      }
+
+      // Probe each dependency independently so one outage does not mask the rest.
+      const dbOk = !(await supabase.from('profiles').select('id', { count: 'exact', head: true })).error;
+      const authOk = !!user;
+      // Probe the bucket the app actually uploads to rather than listBuckets(),
+      // which requires a service-role key and would falsely report a problem.
+      const storageOk = !(await supabase.storage.from('tonborzy-content').list('', { limit: 1 })).error;
+      const flw = getFlutterwaveConfig();
+
+      res.json({
+        supabase_db: dbOk ? 'Connected' : 'Configuration Missing',
+        supabase_auth: authOk ? 'Connected' : 'Configuration Missing',
+        supabase_storage: storageOk ? 'Connected' : 'Configuration Missing',
+        express_backend: 'Connected',
+        gemini_ai: process.env.GEMINI_API_KEY ? 'Connected' : 'Configuration Missing',
+        flutterwave: flw.secretKey ? 'Connected' : 'Configuration Missing'
+      });
+    } catch (err: any) {
+      console.error('System health error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get('/api/admin/system-health-extended', async (req, res) => {
     try {
       const authHeader = req.headers.authorization;
@@ -1376,8 +1978,8 @@ Instructions:
         supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'UTME'),
         supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'Post-UTME'),
         supabase.from('courses').select('*', { count: 'exact', head: true }),
-        supabase.from('course_topics').select('*', { count: 'exact', head: true }),
-        supabase.from('lessons').select('*', { count: 'exact', head: true }),
+        supabase.from('course_modules').select('*', { count: 'exact', head: true }),
+        supabase.from('materials').select('*', { count: 'exact', head: true }),
         supabase.from('cbt_exams').select('*', { count: 'exact', head: true }),
         supabase.from('cbt_questions').select('*', { count: 'exact', head: true }),
         supabase.from('cbt_attempts').select('*', { count: 'exact', head: true }),
@@ -1434,7 +2036,9 @@ Instructions:
         return res.status(403).json({ error: 'Forbidden: Admin access required' });
       }
 
-      const { data: logs, error: logsErr } = await supabase
+      // Use the caller's JWT so RLS evaluates this as `authenticated`, not `anon`.
+      const sbAdminCtx = createSupabaseClient({ global: { headers: { Authorization: authHeader } } });
+      const { data: logs, error: logsErr } = await sbAdminCtx
         .from('audit_logs')
         .select('*')
         .order('created_at', { ascending: false })

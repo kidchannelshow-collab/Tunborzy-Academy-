@@ -12,7 +12,22 @@ interface SignUpProps {
 import React from 'react';
 export default function SignUp({ onCancel, onSuccess }: SignUpProps) {
   const isMounted = React.useRef(true);
-  React.useEffect(() => { return () => { isMounted.current = false; }; }, []);
+  React.useEffect(() => { 
+    return () => { isMounted.current = false; }; 
+  }, []);
+
+  React.useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const refCode = params.get('ref') || params.get('invitation');
+      if (refCode) {
+        setInvitationCode(refCode.trim().toUpperCase());
+      }
+    } catch (e) {
+      // ignore
+    }
+  }, []);
+
   const [step, setStep] = useState(1);
   const [direction, setDirection] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
@@ -30,7 +45,16 @@ export default function SignUp({ onCancel, onSuccess }: SignUpProps) {
   const [showAccessCode, setShowAccessCode] = useState(false);
   
   const [portal, setPortal] = useState('');
-  const [accountType, setAccountType] = useState('');
+  // Public sign-up is Student-only. This is a constant, not state — there is no
+  // control anywhere in this component that can change it, so no UI path can
+  // reach the Admin or Lecturer provisioning branches. Typed as plain `string`
+  // (not a literal) so the existing `accountType === 'Student'` render guards
+  // below keep type-checking unchanged.
+  //
+  // The real enforcement is server-side: public sign-up cannot self-assign a
+  // privileged role because a database trigger rejects it (see
+  // 0055_signup_student_only.sql). This constant only removes the UI route.
+  const accountType: string = 'Student';
   const [accessCode, setAccessCode] = useState('');
   const [invitationCode, setInvitationCode] = useState('');
   
@@ -55,11 +79,10 @@ export default function SignUp({ onCancel, onSuccess }: SignUpProps) {
   
   const isStep2Valid = hasMinLength && hasNumber && hasUpper && hasLower && hasSpecial && passwordsMatch;
 
-  const isStep3Valid = 
-    accountType !== '' && agreed &&
-    ((accountType === 'Student' && portal !== '' && university.trim() !== '' && course.trim() !== '') || 
-     (accountType === 'Lecturer') || 
-     (accountType === 'Admin' && accessCode.trim().length > 0));
+  // Student is the only account type that can be created here, so the portal /
+  // university / course fields are always required.
+  const isStep3Valid =
+    agreed && portal !== '' && university.trim() !== '' && course.trim() !== '';
 
   const nextStep = () => {
     setDirection(1);
@@ -92,75 +115,11 @@ export default function SignUp({ onCancel, onSuccess }: SignUpProps) {
       if (!supabase) throw new Error('Supabase client is not initialized');
 
       const studentId = generateStudentId();
-      const role = accountType || 'Student';
+      // Hard-coded, not derived from any input. Admin and Lecturer accounts are
+      // provisioned only by an admin through Lecturer Management / the
+      // admin-provision-user Edge Function, never through public sign-up.
+      const role = 'Student';
       const emailForAuth = cleanEmail;
-
-      if (role === 'Admin') {
-        const { data: fnData, error: fnError } = await supabase.functions.invoke('admin-provision-user', {
-          body: {
-            action: 'admin-signup',
-            name,
-            email,
-            password,
-            accessCode
-          }
-        });
-
-        if (fnError) {
-          throw new Error(fnError.message || 'Failed to create admin account.');
-        }
-        
-        if (fnData?.error) {
-          throw new Error(fnData.error);
-        }
-
-        // Login after successful creation
-        const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({
-          email,
-          password
-        });
-        if (loginError) throw loginError;
-
-        await refreshProfile();
-        setSuccessMsg('Registration successful. Redirecting...');
-        setTimeout(() => {
-          if (onSuccess && isMounted.current) onSuccess(role);
-        }, 100);
-        return;
-      }
-
-      if (role === 'Lecturer') {
-        const { data: fnData, error: fnError } = await supabase.functions.invoke('admin-provision-user', {
-          body: {
-            action: 'lecturer-signup',
-            name,
-            email,
-            password
-          }
-        });
-
-        if (fnError) {
-          throw new Error(fnError.message || 'Failed to create lecturer account.');
-        }
-
-        if (fnData?.error) {
-          throw new Error(fnData.error);
-        }
-
-        // Login after successful creation
-        const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({
-          email,
-          password
-        });
-        if (loginError) throw loginError;
-
-        await refreshProfile();
-        setSuccessMsg('Registration successful. Redirecting...');
-        setTimeout(() => {
-          if (onSuccess && isMounted.current) onSuccess(role);
-        }, 100);
-        return;
-      }
 
       // ----------------------------------------------------
       // Student Flow Below
@@ -209,7 +168,9 @@ export default function SignUp({ onCancel, onSuccess }: SignUpProps) {
       }
 
       const { data: authData, error: authError } = await supabase.auth.signUp({
-        email,
+        // emailForAuth is `email.trim().toLowerCase()` — the explicit guarantee
+        // that Supabase Auth is never handed an uppercase address from here.
+        email: emailForAuth,
         password,
         options: {
           data: {
@@ -444,7 +405,11 @@ export default function SignUp({ onCancel, onSuccess }: SignUpProps) {
                         type="email"
                         value={email}
                         onChange={(e) => {
-                          setEmail(e.target.value);
+                          // Emails are held lowercase in state, so every consumer
+                          // down the chain — signUp, signInWithPassword and the
+                          // profiles row — receives a lowercase address without
+                          // the caller having to remember to normalise it.
+                          setEmail(e.target.value.toLowerCase());
                           if (emailTouched && /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(e.target.value.trim().toLowerCase())) {
                             setEmailTouched(false); // Clear error aggressively when valid
                           }
@@ -611,32 +576,11 @@ export default function SignUp({ onCancel, onSuccess }: SignUpProps) {
                     Final Step
                   </h2>
                   <p className="text-sm font-body font-normal text-slate-400">
-                    Select your role to complete registration.
+                    Tell us about your studies to complete registration.
                   </p>
                 </div>
 
                 <div className="space-y-5 mb-8">
-                  <div>
-                    <label className="block text-sm font-poppins font-medium text-slate-400 mb-1.5">
-                      Account Type
-                    </label>
-                    <div className="relative">
-                      <select
-                        value={accountType}
-                        onChange={(e) => setAccountType(e.target.value)}
-                        className="block w-full pl-4 pr-10 py-3.5 border border-slate-700 rounded-xl leading-5 bg-[#020617]/50 text-white focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500 sm:text-sm transition-all appearance-none font-body font-normal"
-                      >
-                        <option value="" disabled>Select Account Type</option>
-                        <option value="Student">Student</option>
-                        <option value="Lecturer">Lecturer</option>
-                        <option value="Admin">Admin</option>
-                      </select>
-                      <div className="absolute inset-y-0 right-0 pr-4 flex items-center pointer-events-none">
-                        <ChevronDown className="h-5 w-5 text-slate-500" />
-                      </div>
-                    </div>
-                  </div>
-
                   <AnimatePresence mode="wait">
                     {accountType === 'Student' && (
                       <motion.div
@@ -724,42 +668,6 @@ export default function SignUp({ onCancel, onSuccess }: SignUpProps) {
                       </motion.div>
                     )}
 
-                    {accountType === 'Admin' && (
-                      <motion.div
-                        key="staff-fields"
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="overflow-hidden"
-                      >
-                        <label className="block text-sm font-poppins font-medium text-slate-400 mb-1.5 pt-2">
-                          Admin Access Code
-                        </label>
-                        <div className="relative">
-                          <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                            <Key className="h-5 w-5 text-slate-500" />
-                          </div>
-                          <input
-                            type={showAccessCode ? "text" : "password"}
-                            value={accessCode}
-                            onChange={(e) => setAccessCode(e.target.value)}
-                            className="block w-full pl-11 pr-12 py-3.5 border border-slate-700 rounded-xl leading-5 bg-[#020617]/50 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500 sm:text-sm transition-all font-body font-normal"
-                            placeholder="••••••••"
-                          />
-                          <button
-                            type="button"
-                            className="absolute inset-y-0 right-0 pr-4 flex items-center"
-                            onClick={() => setShowAccessCode(!showAccessCode)}
-                          >
-                            {showAccessCode ? (
-                              <EyeOff className="h-5 w-5 text-slate-500 hover:text-slate-300 transition-colors" />
-                            ) : (
-                              <Eye className="h-5 w-5 text-slate-500 hover:text-slate-300 transition-colors" />
-                            )}
-                          </button>
-                        </div>
-                      </motion.div>
-                    )}
                   </AnimatePresence>
 
                   <div className="pt-3">

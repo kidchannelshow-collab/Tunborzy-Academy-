@@ -93,10 +93,15 @@ export default function StudentLessonViewer({ material, onClose, onNavigateToSib
   const fetchContext = async () => {
     if (!supabase) return;
     try {
+      // Archived courses are excluded. If the course is archived this returns no
+      // row, `.single()` reports PGRST116, and the destructure above ignores the
+      // error — so courseData stays null and the heading simply omits the course
+      // name rather than showing one for a retired course.
       const { data: courseData } = await supabase
         .from('courses')
         .select('title')
         .eq('course_code', material.course_code)
+        .eq('is_archived', false)
         .single();
       if (courseData) setCourseName(courseData.title);
 
@@ -148,12 +153,11 @@ export default function StudentLessonViewer({ material, onClose, onNavigateToSib
   };
 
   const navigateToSibling = (siblingId: string) => {
-    // In a full router app we'd push state, but here we can't easily replace the `material` prop 
-    // without lifting state up. We will simulate it by doing nothing for now or dispatching an event?
-    // Wait, the prompt says "Add navigation... This only updates the UI for now." or actually:
-    // "Add navigation: Previous Lesson, Next Lesson... Back to Topic... This only updates the UI for now."
-    // Let's just make them buttons.
-    console.log("Navigating to", siblingId);
+    // This viewer cannot replace its own `material` prop — that state belongs to
+    // the parent — so it hands the sibling id back and lets the parent swap the
+    // lesson in. Callers that do not supply the prop keep the previous no-op
+    // behaviour.
+    onNavigateToSibling?.(siblingId);
   };
 
   const renderBlock = (block: any) => {
@@ -162,30 +166,41 @@ export default function StudentLessonViewer({ material, onClose, onNavigateToSib
         return <h1 className="text-4xl md:text-5xl font-display font-bold text-white mb-8 leading-tight">{block.content}</h1>;
       case 'intro':
         return (
-          <div className="text-xl md:text-2xl text-slate-300 font-body leading-relaxed mb-8 border-l-4 border-indigo-500 pl-6 py-2 bg-indigo-500/5 rounded-r-2xl">
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{block.content}</ReactMarkdown>
+          // `lesson-content` carries the real typography (see index.css): it
+          // restores the heading sizes, list markers and paragraph spacing that
+          // Tailwind's preflight strips. The `prose` classes this file used
+          // before were inert — the Tailwind typography plugin is not installed
+          // — so saved formatting previously had no styling at all.
+          <div className="text-xl md:text-2xl text-slate-200 font-body mb-10 border-l-4 border-sky-500 pl-6 py-3 bg-sky-500/5 rounded-r-2xl">
+            <div className="lesson-content">
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{block.content}</ReactMarkdown>
+            </div>
           </div>
         );
       case 'main':
       case 'summary':
         return (
-          <div className="prose prose-invert prose-slate max-w-none mb-8 text-slate-300 font-body leading-relaxed text-lg overflow-x-auto custom-scrollbar">
+          // `.lesson-content` sets typography but no colour or size, so these
+          // utilities stay in charge of the reading size and text colour.
+          <div className="lesson-content text-lg text-slate-300 font-body mb-10">
             <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{block.content}</ReactMarkdown>
           </div>
         );
       case 'example':
         return (
-          <div className="bg-slate-900/80 border border-slate-700/50 rounded-2xl p-6 md:p-8 mb-8 shadow-lg">
-            <h4 className="text-amber-400 font-bold uppercase tracking-widest text-sm mb-4 flex items-center gap-2"><BookOpen size={16} /> Worked Example</h4>
-            <div className="prose prose-invert max-w-none text-slate-200">
+          <div className="bg-[#0d1a33] border border-violet-500/25 rounded-3xl p-6 md:p-8 mb-10 shadow-lg">
+            <h4 className="text-amber-400 font-bold uppercase tracking-widest text-sm mb-5 flex items-center gap-2">
+              <BookOpen size={16} /> Worked Example
+            </h4>
+            <div className="lesson-content">
               <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{block.content}</ReactMarkdown>
             </div>
           </div>
         );
       case 'formula':
         return (
-          <div className="bg-indigo-950/30 border border-indigo-500/20 rounded-2xl p-6 mb-8 overflow-x-auto text-center flex items-center justify-center min-h-[100px]">
-            <div className="text-xl md:text-2xl text-indigo-100">
+          <div className="bg-violet-950/25 border border-violet-500/25 rounded-3xl p-6 mb-10 overflow-x-auto text-center flex items-center justify-center min-h-[100px]">
+            <div className="text-xl md:text-2xl text-violet-100">
               <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{block.content}</ReactMarkdown>
             </div>
           </div>
@@ -246,7 +261,7 @@ export default function StudentLessonViewer({ material, onClose, onNavigateToSib
         return (
           <div className="mt-16 pt-8 border-t border-slate-800">
             <h4 className="text-slate-400 font-bold uppercase tracking-widest text-sm mb-4">References</h4>
-            <div className="prose prose-invert prose-sm text-slate-500">
+            <div className="lesson-content text-sm text-slate-500">
               <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{block.content}</ReactMarkdown>
             </div>
           </div>
@@ -302,13 +317,16 @@ export default function StudentLessonViewer({ material, onClose, onNavigateToSib
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 20 }}
-      className="fixed inset-0 z-50 bg-[#020617] flex flex-col overflow-hidden"
+      className="fixed inset-0 z-50 bg-[#0a1128] flex flex-col overflow-hidden"
     >
-      {/* Progress Bar */}
-      <motion.div className="h-1 bg-indigo-500 origin-left z-50 fixed top-0 left-0 right-0" style={{ scaleX }} />
+      {/* Progress Bar — yellow → light blue → purple, the platform palette */}
+      <motion.div
+        className="h-1 bg-gradient-to-r from-amber-400 via-sky-400 to-violet-500 origin-left z-50 fixed top-0 left-0 right-0"
+        style={{ scaleX }}
+      />
 
       {/* Header */}
-      <header className="flex-shrink-0 bg-[#0f172a]/80 backdrop-blur-xl border-b border-slate-800 sticky top-0 z-40">
+      <header className="flex-shrink-0 bg-[#0d1a33]/85 backdrop-blur-xl border-b border-sky-500/15 sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3 sm:gap-6 flex-1 min-w-0">
             <button onClick={onClose} className="p-2 -ml-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors shrink-0">
@@ -400,15 +418,19 @@ export default function StudentLessonViewer({ material, onClose, onNavigateToSib
           
           <div className="mb-12">
             <div className="flex flex-wrap items-center gap-3 mb-6">
-              <span className="px-3 py-1 rounded-full bg-indigo-500/10 text-indigo-400 text-xs font-bold uppercase tracking-widest">{material.topic}</span>
-              <span className="text-slate-500 text-sm font-medium">{getEstimatedTime()} min read</span>
+              <span className="px-3 py-1 rounded-full bg-amber-500/10 text-amber-400 text-xs font-bold uppercase tracking-widest border border-amber-500/20">{material.topic}</span>
+              <span className="text-slate-400 text-sm font-medium">{getEstimatedTime()} min read</span>
             </div>
             {!blocks.find(b => b.type === 'title') && (
               <h1 className="text-4xl md:text-5xl font-display font-bold text-white mb-6 leading-tight">{material.title}</h1>
             )}
           </div>
 
-          <div className="lesson-content">
+          {/* Deliberately NOT `.lesson-content`: that class carries heading and
+              body sizes for Markdown, and applying it here would override the
+              explicit `text-4xl`/`text-5xl` on the title block. Each Markdown
+              block applies it to its own content instead. */}
+          <div>
             {blocks.map((block, i) => (
               <React.Fragment key={block.id || i}>
                 {renderBlock(block)}
@@ -428,9 +450,9 @@ export default function StudentLessonViewer({ material, onClose, onNavigateToSib
                     href={file.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-4 bg-slate-900 border border-slate-800 p-4 rounded-2xl hover:border-indigo-500 hover:bg-slate-800/80 transition-all group"
+                    className="flex items-center gap-4 bg-[#0d1a33] border border-sky-500/15 p-4 rounded-2xl hover:border-sky-500/50 hover:bg-[#13233f] transition-all group"
                   >
-                    <div className="w-12 h-12 rounded-xl bg-slate-950 flex items-center justify-center text-indigo-400 shrink-0">
+                    <div className="w-12 h-12 rounded-xl bg-[#0a1128] flex items-center justify-center text-sky-400 shrink-0">
                       <Bookmark size={20} className="group-hover:scale-110 transition-transform" />
                     </div>
                     <div className="flex-1 min-w-0">
@@ -480,9 +502,9 @@ export default function StudentLessonViewer({ material, onClose, onNavigateToSib
           )}
 
           {/* Ready to Practice Recommendation Card */}
-          <div className="mt-16 p-8 rounded-3xl bg-gradient-to-br from-indigo-950/40 via-slate-900 to-slate-900 border border-indigo-500/20 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-6">
+          <div className="mt-16 p-8 rounded-3xl bg-gradient-to-br from-violet-950/40 via-[#0d1a33] to-[#0d1a33] border border-violet-500/20 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-6">
             <div className="space-y-2 text-center sm:text-left">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 text-indigo-400 text-xs font-bold uppercase tracking-wider">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 text-amber-400 text-xs font-bold uppercase tracking-wider">
                 <Award size={14} /> CBT Practice Assessment
               </div>
               <h4 className="text-xl font-bold text-white">Ready to practice {material.topic}?</h4>
@@ -494,7 +516,7 @@ export default function StudentLessonViewer({ material, onClose, onNavigateToSib
               {topicQuestionsCount !== null && topicQuestionsCount > 0 ? (
                 <button
                   onClick={() => setCbtModalOpen(true)}
-                  className="px-6 py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold shadow-lg shadow-indigo-600/20 transition-all flex items-center gap-2 whitespace-nowrap"
+                  className="px-6 py-3.5 rounded-2xl bg-sky-600 hover:bg-sky-500 text-white font-bold shadow-lg shadow-sky-600/20 transition-all flex items-center gap-2 whitespace-nowrap"
                 >
                   Start CBT Drill
                 </button>
@@ -509,26 +531,26 @@ export default function StudentLessonViewer({ material, onClose, onNavigateToSib
           {/* Lesson Completion & Actions */}
           <div className="mt-24 pt-12 border-t border-slate-800">
             <div className="flex flex-col sm:flex-row items-center justify-between gap-6">
-              <button 
+              <button
                 onClick={() => setIsCompleted(!isCompleted)}
-                className={`flex items-center gap-3 px-8 py-4 rounded-2xl font-bold transition-all w-full sm:w-auto justify-center ${isCompleted ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 shadow-[0_0_20px_rgba(16,185,129,0.1)]' : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-xl hover:shadow-indigo-500/20'}`}
+                className={`flex items-center gap-3 px-8 py-4 rounded-2xl font-bold transition-all w-full sm:w-auto justify-center ${isCompleted ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 shadow-[0_0_20px_rgba(16,185,129,0.1)]' : 'bg-sky-600 hover:bg-sky-500 text-white shadow-xl hover:shadow-sky-500/20'}`}
               >
                 {isCompleted ? <CheckCircle size={20} className="fill-emerald-400 text-emerald-950" /> : <CheckCircle size={20} />}
                 {isCompleted ? 'Completed' : 'Mark as Completed'}
               </button>
 
               <div className="flex items-center gap-3 w-full sm:w-auto">
-                <button 
+                <button
                   onClick={() => prevLesson && navigateToSibling(prevLesson.id)}
                   disabled={!prevLesson}
-                  className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-4 rounded-2xl font-bold bg-slate-900 border border-slate-800 text-slate-300 hover:bg-slate-800 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-4 rounded-2xl font-bold bg-[#0d1a33] border border-sky-500/20 text-slate-300 hover:bg-[#13233f] hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <ChevronLeft size={18} /> Prev
                 </button>
-                <button 
+                <button
                   onClick={() => nextLesson && navigateToSibling(nextLesson.id)}
                   disabled={!nextLesson}
-                  className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-4 rounded-2xl font-bold bg-slate-900 border border-slate-800 text-slate-300 hover:bg-slate-800 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-4 rounded-2xl font-bold bg-[#0d1a33] border border-sky-500/20 text-slate-300 hover:bg-[#13233f] hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Next <ChevronRight size={18} />
                 </button>

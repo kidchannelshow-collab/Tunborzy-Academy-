@@ -14,6 +14,39 @@ interface TopicCount {
   count: number;
 }
 
+/**
+ * The Undergraduate CBT course and semester definitions.
+ *
+ * Exported so the admin PDF importer files questions under exactly these
+ * course codes instead of keeping a second list that could drift out of step.
+ *
+ * The two semesters are separated by their course codes (CHM 101 vs CHM 102) —
+ * `cbt_exams` has no semester column, and `/api/cbt/start` matches a student's
+ * chosen subject to an exam purely on normalized `course_code`, so the code is
+ * what actually routes a paper to the right semester.
+ */
+export const FIRST_SEMESTER_COURSES = [
+  { code: 'CHM 101', title: 'General Chemistry I', type: 'Academic' as const },
+  { code: 'PHY 101', title: 'General Physics I', type: 'Academic' as const },
+  { code: 'PHY 103', title: 'Physics for Physical Sciences I', type: 'Academic' as const },
+  { code: 'MTH 101', title: 'Elementary Mathematics I', type: 'Academic' as const },
+  { code: 'MTH 103', title: 'Algebra and Trigonometry', type: 'Academic' as const },
+  { code: 'COS 101', title: 'Introduction to Computer Science', type: 'Academic' as const },
+  { code: 'PHY 107', title: 'Practical Physics I (CBT)', type: 'CBT-Only' as const },
+  { code: 'BIO 107', title: 'General Biology Practical I (CBT)', type: 'CBT-Only' as const },
+  { code: 'CHM 107', title: 'Practical Chemistry I (CBT)', type: 'CBT-Only' as const },
+];
+
+export const SECOND_SEMESTER_COURSES = [
+  { code: 'CHM 102', title: 'General Chemistry II', type: 'Academic' as const },
+  { code: 'PHY 102', title: 'General Physics II', type: 'Academic' as const },
+  { code: 'PHY 104', title: 'Physics for Physical Sciences II', type: 'Academic' as const },
+  { code: 'MTH 102', title: 'Elementary Mathematics II', type: 'Academic' as const },
+  { code: 'MTH 114', title: 'Introduction to Numerical Methods', type: 'Academic' as const },
+  { code: 'CHM 108', title: 'Practical Chemistry II (CBT)', type: 'CBT-Only' as const },
+  { code: 'PHY 108', title: 'Practical Physics II (CBT)', type: 'CBT-Only' as const },
+];
+
 export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewAnalytics }: CBTUndergraduateDrillingProps) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   
@@ -31,28 +64,6 @@ export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewA
   const [questionCount, setQuestionCount] = useState(20);
   const [isTimed, setIsTimed] = useState(true);
   const [timeMinutes, setTimeMinutes] = useState(30);
-
-  const FIRST_SEMESTER_COURSES = [
-    { code: 'CHM 101', title: 'General Chemistry I', type: 'Academic' as const },
-    { code: 'PHY 101', title: 'General Physics I', type: 'Academic' as const },
-    { code: 'PHY 103', title: 'Physics for Physical Sciences I', type: 'Academic' as const },
-    { code: 'MTH 101', title: 'Elementary Mathematics I', type: 'Academic' as const },
-    { code: 'MTH 103', title: 'Algebra and Trigonometry', type: 'Academic' as const },
-    { code: 'COS 101', title: 'Introduction to Computer Science', type: 'Academic' as const },
-    { code: 'PHY 107', title: 'Practical Physics I (CBT)', type: 'CBT-Only' as const },
-    { code: 'BIO 107', title: 'General Biology Practical I (CBT)', type: 'CBT-Only' as const },
-    { code: 'CHM 107', title: 'Practical Chemistry I (CBT)', type: 'CBT-Only' as const },
-  ];
-
-  const SECOND_SEMESTER_COURSES = [
-    { code: 'CHM 102', title: 'General Chemistry II', type: 'Academic' as const },
-    { code: 'PHY 102', title: 'General Physics II', type: 'Academic' as const },
-    { code: 'PHY 104', title: 'Physics for Physical Sciences II', type: 'Academic' as const },
-    { code: 'MTH 102', title: 'Elementary Mathematics II', type: 'Academic' as const },
-    { code: 'MTH 114', title: 'Introduction to Numerical Methods', type: 'Academic' as const },
-    { code: 'CHM 108', title: 'Practical Chemistry II (CBT)', type: 'CBT-Only' as const },
-    { code: 'PHY 108', title: 'Practical Physics II (CBT)', type: 'CBT-Only' as const },
-  ];
 
   const handleSemesterSelect = (semester: 'First Semester' | 'Second Semester') => {
     setSelectedSemester(semester);
@@ -127,7 +138,11 @@ export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewA
       courseCode: selectedCourse,
       mode: practiceMode,
       topic: practiceMode === 'topic' ? selectedTopic : undefined,
-      count: questionCount,
+      // Named `limit` because this object is posted verbatim as the body of
+      // POST /api/cbt/start, which reads `limit` (server.ts:605) and falls back
+      // to 20 when it is absent. Sending it as `count` silently ignored the
+      // student's chosen question count. No other code reads this key.
+      limit: questionCount,
       timed: isTimed,
       time: timeMinutes
     });

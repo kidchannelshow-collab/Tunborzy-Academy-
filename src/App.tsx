@@ -21,9 +21,9 @@ const Login = lazy(() => import('./components/Login'));
 
 const ResourceLibraryPage = lazy(() => import('./components/ResourceLibraryPage'));
 const AcademicMaterialsPage = lazy(() => import('./components/student/AcademicMaterialsPage'));
+const PostUtmeLearningPage = lazy(() => import('./components/postutme/PostUtmeLearningPage'));
 const CBTPracticePage = lazy(() => import('./components/CBTPracticePage'));
 
-const RevisionModePage = lazy(() => import('./components/RevisionModePage'));
 const PerformanceAnalyticsPage = lazy(() => import('./components/PerformanceAnalyticsPage'));
 
 const StudentProfilePage = lazy(() => import('./components/StudentProfilePage'));
@@ -38,11 +38,14 @@ const HelpSupportPage = lazy(() => import('./components/HelpSupportPage'));
 import { useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { useProfile, getProfileCache } from './lib/useProfile';
+import { useGeneralSettings } from './lib/platformSettings';
+import MaintenanceScreen from './components/MaintenanceScreen';
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<'landing' | 'signup' | 'login' | 'dashboard' | 'cbt' | 'utme' | 'resources' | 'academic-materials' | 'revision' | 'analytics' | 'profile' | 'settings' | 'lecturer_dashboard' | 'admin_dashboard' | 'announcements' | 'ai' | 'help_support'>('landing');
+  const [currentView, setCurrentView] = useState<'landing' | 'signup' | 'login' | 'dashboard' | 'cbt' | 'utme' | 'resources' | 'academic-materials' | 'post-utme-learning' | 'analytics' | 'profile' | 'settings' | 'lecturer_dashboard' | 'admin_dashboard' | 'announcements' | 'ai' | 'help_support'>('landing');
   
   const { profile: userProfile, loading: isLoadingSession } = useProfile();
+  const { settings: platformSettings } = useGeneralSettings();
 
   const isAllowed = (role: string, view: string) => {
     if (role === 'Student' && (view === 'admin_dashboard' || view === 'lecturer_dashboard')) return false;
@@ -169,6 +172,29 @@ export default function App() {
     setCurrentView('landing');
   };
 
+  /**
+   * Global maintenance gate.
+   *
+   * `maintenance_mode` lives in `platform_settings.general` and is read by every
+   * visitor, signed in or not (migration 0056 makes that row publicly readable —
+   * without it a signed-out visitor would read zero rows and this gate could
+   * never fire on the login or sign-up pages).
+   *
+   * Admins are deliberately exempt: the whole point is that they can still reach
+   * System Settings to switch maintenance back off. The check is against the
+   * profile role, and the database enforces the same rule independently — only
+   * an Admin can write the setting via the admin-only settings endpoint — so
+   * hiding the screen from admins here is a convenience, not the security
+   * boundary.
+   */
+  // `!isLoadingSession` matters: while the profile is still resolving,
+  // `userProfile` is null and an admin would be shown the maintenance screen
+  // before their role arrives. Falling through to the session spinner instead
+  // means the role is always known before this decision is made.
+  if (!isLoadingSession && platformSettings.maintenance_mode && userProfile?.role !== 'Admin') {
+    return <MaintenanceScreen />;
+  }
+
   if (isLoadingSession) {
     return (
       <div className="min-h-[100dvh] bg-[#020617] flex items-center justify-center">
@@ -222,8 +248,8 @@ export default function App() {
       {currentView === 'academic-materials' && (
         <AcademicMaterialsPage onLogout={handleLogout} onNavigate={handleNavigate} />
       )}
-      {currentView === 'revision' && (
-        <RevisionModePage onLogout={handleLogout} onNavigate={handleNavigate} />
+      {currentView === 'post-utme-learning' && (
+        <PostUtmeLearningPage onLogout={handleLogout} onNavigate={handleNavigate} />
       )}
       {currentView === 'analytics' && (
         <PerformanceAnalyticsPage onLogout={handleLogout} onNavigate={handleNavigate} />

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Award, CheckCircle2, XCircle, Clock, RotateCcw, ArrowLeft, BookOpen, Eye } from 'lucide-react';
+import { Award, RotateCcw, Eye } from 'lucide-react';
+import UTMEAttemptReview from './UTMEAttemptReview';
 
 interface UTMEResultViewProps {
   result: {
@@ -84,72 +85,21 @@ export default function UTMEResultView({ result, onRetry, onBack }: UTMEResultVi
           </div>
         </motion.div>
       ) : (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-          <div className="flex items-center justify-between">
-            <button
-              onClick={() => setShowReview(false)}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-medium text-sm transition-colors"
-            >
-              <ArrowLeft size={16} /> Back to Results Summary
-            </button>
-            <h2 className="text-xl font-bold text-white">Answer Review & Explanations</h2>
-          </div>
-
-          <div className="space-y-4">
-            {result.results.map((r, idx) => (
-              <div
-                key={r.id}
-                className={`bg-[#0f172a] border rounded-3xl p-6 md:p-8 space-y-4 ${
-                  r.is_correct ? 'border-emerald-500/30' : 'border-rose-500/30'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Question {idx + 1}</span>
-                  <span className={`px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1.5 ${
-                    r.is_correct ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
-                  }`}>
-                    {r.is_correct ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-                    {r.is_correct ? 'Correct' : 'Incorrect'}
-                  </span>
-                </div>
-
-                <div className="text-lg font-medium text-white">{r.question_text}</div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
-                  {[
-                    { letter: 'A', text: r.option_a },
-                    { letter: 'B', text: r.option_b },
-                    { letter: 'C', text: r.option_c },
-                    { letter: 'D', text: r.option_d }
-                  ].map(opt => {
-                    const isStudentChoice = r.student_answer === opt.letter;
-                    const isCorrectChoice = r.correct_option === opt.letter;
-
-                    let bg = "bg-slate-900/60 border-slate-800 text-slate-300";
-                    if (isCorrectChoice) bg = "bg-emerald-500/20 border-emerald-500 text-emerald-200 font-bold";
-                    else if (isStudentChoice && !isCorrectChoice) bg = "bg-rose-500/20 border-rose-500 text-rose-200 font-bold";
-
-                    return (
-                      <div key={opt.letter} className={`p-3.5 rounded-xl border flex items-center gap-3 ${bg}`}>
-                        <div className="w-6 h-6 rounded-lg bg-slate-900 border border-slate-700 flex items-center justify-center text-xs font-bold text-white">
-                          {opt.letter}
-                        </div>
-                        <div className="text-sm flex-1">{opt.text}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {r.explanation && (
-                  <div className="mt-4 p-4 bg-slate-900/80 border border-slate-800 rounded-2xl text-sm text-slate-300 space-y-1">
-                    <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider block">Explanation</span>
-                    <p>{r.explanation}</p>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </motion.div>
+        /* The same review component the saved-history path uses, so a fresh
+           attempt and a reopened one page, lay out and read identically. */
+        <UTMEAttemptReview
+          questions={result.results || []}
+          meta={{
+            subject: (result as any).subjectName,
+            score: result.score,
+            totalCorrect: result.totalCorrect,
+            totalWrong: result.totalWrong,
+            totalUnanswered: result.totalUnanswered,
+            timeUsed: result.timeUsed,
+          }}
+          onBack={() => setShowReview(false)}
+          backLabel="Back to Results Summary"
+        />
       )}
     </div>
   );

@@ -29,6 +29,144 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+   Lesson content typography
+   ---------------------------------------------------------------------------
+   The block content saved by the Lesson Editor is Markdown, rendered by
+   StudentLessonViewer into `.lesson-content`. Tailwind's preflight strips
+   `list-style` from ul/ol, so without the rules below a bulleted or numbered
+   list renders as unmarked, unindented lines — the formatting looks like it
+   "did not save". Everything here is scoped to `.lesson-content` so it cannot
+   leak into the rest of the app.
+   --------------------------------------------------------------------------- */
+/*
+ * Scoped to structure and rhythm only — deliberately NOT `color` or
+ * `font-size`. These rules are unlayered, so they outrank Tailwind utilities;
+ * setting either here would silently override the `text-xl` / `text-violet-100`
+ * on the block wrappers that are supposed to control them. Block wrappers own
+ * colour and size; this class owns headings, lists, links and spacing.
+ */
+.lesson-content {
+  line-height: 1.8;
+  /* Long words and URLs must wrap rather than force the page to scroll. */
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* Vertical rhythm: one consistent gap between top-level blocks. */
+.lesson-content > * + * {
+  margin-top: 1.15rem;
+}
+
+.lesson-content h1,
+.lesson-content h2,
+.lesson-content h3,
+.lesson-content h4 {
+  color: #ffffff;
+  font-family: 'Outfit', sans-serif;
+  font-weight: 700;
+  line-height: 1.25;
+  margin-top: 2.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.lesson-content > :first-child {
+  margin-top: 0;
+}
+
+.lesson-content h1 { font-size: 2rem; }
+.lesson-content h2 { font-size: 1.5rem; }
+.lesson-content h3 { font-size: 1.25rem; }
+.lesson-content h4 { font-size: 1.1rem; }
+
+.lesson-content p {
+  margin: 0;
+}
+
+.lesson-content strong { color: #ffffff; font-weight: 700; }
+.lesson-content em { color: #e2e8f0; }
+
+.lesson-content a {
+  color: #38bdf8; /* light blue */
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.lesson-content a:hover { color: #7dd3fc; }
+
+/* Restore the markers and indentation Tailwind's preflight removes. */
+.lesson-content ul,
+.lesson-content ol {
+  padding-left: 1.65rem;
+  margin: 1.15rem 0;
+}
+.lesson-content ul { list-style: disc; }
+.lesson-content ul ul { list-style: circle; }
+.lesson-content ol { list-style: decimal; }
+.lesson-content li { margin: 0.4rem 0; padding-left: 0.2rem; }
+.lesson-content li::marker { color: #fbbf24; /* yellow */ }
+
+.lesson-content blockquote {
+  border-left: 3px solid #8b5cf6; /* purple */
+  background: rgba(139, 92, 246, 0.08);
+  border-radius: 0 0.75rem 0.75rem 0;
+  padding: 0.85rem 1.15rem;
+  color: #e2e8f0;
+  font-style: italic;
+}
+
+.lesson-content code {
+  background: rgba(56, 189, 248, 0.12);
+  color: #7dd3fc;
+  padding: 0.15rem 0.4rem;
+  border-radius: 0.375rem;
+  font-size: 0.9em;
+}
+
+.lesson-content pre {
+  background: #0a1128; /* navy */
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  border-radius: 0.9rem;
+  padding: 1.1rem 1.25rem;
+  overflow-x: auto;
+}
+.lesson-content pre code {
+  background: transparent;
+  color: #e2e8f0;
+  padding: 0;
+}
+
+.lesson-content hr {
+  border: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.25);
+  margin: 2.25rem 0;
+}
+
+.lesson-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.9rem;
+}
+
+/* remark-gfm tables */
+.lesson-content table {
+  width: 100%;
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  margin: 1.5rem 0;
+}
+.lesson-content th,
+.lesson-content td {
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  padding: 0.6rem 0.85rem;
+  text-align: left;
+}
+.lesson-content th {
+  background: rgba(56, 189, 248, 0.1);
+  color: #ffffff;
+  font-weight: 700;
+}
+
 html {
   scroll-behavior: smooth;
 }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeft, ArrowRight, Clock, Flag, Send, AlertTriangle, Maximize, Minimize } from 'lucide-react';
 import { supabase } from '../../supabaseClient';
@@ -30,7 +30,18 @@ export default function UTMEExamTaker({ config, onFinish, onCancel }: UTMEExamTa
   const [showConfirm, setShowConfirm] = useState(false);
   const [attemptId, setAttemptId] = useState<string | null>(null);
 
+  // React StrictMode (src/main.tsx) mounts, unmounts and remounts every
+  // component in development, so this effect runs twice for one sitting and each
+  // run POSTs /api/utme/start. Guarding on the identity of the sitting keeps the
+  // effect re-runnable when the student genuinely starts a different exam, while
+  // stopping the duplicate call that used to record a second attempt.
+  const startedKeyRef = useRef<string | null>(null);
+
   useEffect(() => {
+    const startKey = `${config.subjectId}|${config.mode}|${config.topicId ?? ''}|${config.count}|${config.time}`;
+    if (startedKeyRef.current === startKey) return;
+    startedKeyRef.current = startKey;
+
     async function initExam() {
       try {
         const session = (await supabase.auth.getSession()).data.session;

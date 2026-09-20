@@ -1,4 +1,4 @@
-import { PenTool, Megaphone, Clock } from 'lucide-react';
+import { PenTool, Megaphone, Clock, Award } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useState, useEffect } from 'react';
 import { supabase } from '../../supabaseClient';
@@ -31,24 +31,74 @@ export default function ActivityAndAnnouncements({ onNavigate }: ActivityAndAnno
 
     const fetchActivities = async () => {
       try {
-        const { data, error } = await supabase
-          .from('cbt_attempts')
-          .select('*, cbt_exams(title)')
-          .eq('student_id', profile.id)
-          .order('started_at', { ascending: false })
-          .limit(3);
-          
-        if (data) {
-          const formatted = data.map(attempt => ({
-             type: 'cbt',
-             title: `Attempted CBT: ${attempt.cbt_exams?.title || 'Unknown Exam'}`,
-             time: new Date(attempt.started_at).toLocaleDateString(),
-             icon: PenTool,
-             color: 'text-amber-500',
-             bg: 'bg-amber-500/10'
-          }));
-          setActivities(formatted);
-        }
+        // COMPLETED CBTs only, from the table each portal records into: UTME in
+        // `utme_attempts` (keyed by `student_id`), the undergraduate drill in
+        // `cbt_attempts` (keyed by `user_id`). This previously read
+        // `cbt_attempts` alone with no status filter, so a UTME student's feed
+        // was empty and unfinished sittings could surface as activity.
+        //
+        // Same source and same definition of "a CBT taken" as the UTME
+        // dashboard, Performance Analytics and the Profile, so all four agree.
+        const [utmeRes, cbtRes, postUtmeRes] = await Promise.all([
+          supabase
+            .from('utme_attempts')
+            .select('id, score, percentage, created_at, utme_subjects(name)')
+            .eq('student_id', profile.id)
+            .eq('status', 'completed')
+            .order('created_at', { ascending: false })
+            .limit(3),
+          supabase
+            .from('cbt_attempts')
+            .select('id, score, end_time, cbt_exams(title)')
+            .eq('user_id', profile.id)
+            .eq('status', 'completed')
+            .order('end_time', { ascending: false })
+            .limit(3),
+          // Post-UTME screenings are their own table; without this a Post-UTME
+          // student's feed stayed empty however much they had practised.
+          supabase
+            .from('post_utme_attempts')
+            .select('id, score, end_time, post_utme_exams(title, subject)')
+            .eq('user_id', profile.id)
+            .eq('status', 'completed')
+            .order('end_time', { ascending: false })
+            .limit(3),
+        ]);
+
+        const merged = [
+          ...(utmeRes.data || []).map((a: any) => ({
+            at: a.created_at,
+            name: a.utme_subjects?.name || 'UTME CBT',
+            score: Math.round(Number(a.score ?? a.percentage ?? 0)),
+          })),
+          ...(cbtRes.data || []).map((a: any) => ({
+            at: a.end_time,
+            name: a.cbt_exams?.title || 'CBT Practice',
+            score: Math.round(Number(a.score ?? 0)),
+          })),
+          ...(postUtmeRes.data || []).map((a: any) => ({
+            at: a.end_time,
+            name: a.post_utme_exams?.title || a.post_utme_exams?.subject || 'Post-UTME CBT',
+            score: Math.round(Number(a.score ?? 0)),
+          })),
+        ]
+          .filter((a) => a.at)
+          .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+          .slice(0, 3);
+
+        setActivities(
+          merged.map((a) => ({
+            type: 'cbt',
+            title: `Completed CBT: ${a.name}`,
+            time: `${new Date(a.at).toLocaleDateString()} · ${a.score}%`,
+            // Award/emerald is the UTME CBT mark used by the sidebar and quick
+            // actions; PenTool/amber is kept for the undergraduate drill so a
+            // CBT entry is recognisable as whichever system it belongs to.
+            icon: profile?.portal === 'Undergraduate' ? PenTool : Award,
+            color: profile?.portal === 'Undergraduate' ? 'text-amber-500' : 'text-emerald-500',
+            bg: profile?.portal === 'Undergraduate' ? 'bg-amber-500/10' : 'bg-emerald-500/10',
+          })),
+        );
       } catch (err) {
         console.error(err);
       }
@@ -75,7 +125,12 @@ export default function ActivityAndAnnouncements({ onNavigate }: ActivityAndAnno
               whileHover={{ x: 4 }}
               onClick={() => {
                 if (activity.type === 'chat') if (onNavigate) onNavigate('chats');
-                if (activity.type === 'cbt') if (onNavigate) onNavigate('cbt');
+                // UTME students' CBT history lives on the 'utme' route; 'cbt' is
+                // the undergraduate practice page. Only an explicitly
+                // Undergraduate portal goes there.
+                if (activity.type === 'cbt') {
+                  if (onNavigate) onNavigate(profile?.portal === 'Undergraduate' ? 'cbt' : 'utme');
+                }
               }}
               className="flex items-center gap-4 p-3 rounded-xl hover:bg-slate-800/50 transition-colors cursor-pointer group"
             >
@@ -95,11 +150,14 @@ export default function ActivityAndAnnouncements({ onNavigate }: ActivityAndAnno
             <div className="text-center py-8">
               <Clock className="w-12 h-12 text-slate-700 mx-auto mb-3" />
               <p className="text-slate-400 font-medium">No recent activity found.</p>
-              <button 
-                onClick={() => onNavigate && onNavigate('courses')}
+              {/* Was labelled "Start learning" and routed to 'courses', a view
+                  that no longer exists, so it led nowhere. Now points at the
+                  UTME CBT centre. */}
+              <button
+                onClick={() => onNavigate && onNavigate('utme')}
                 className="mt-2 text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
               >
-                Start learning
+                Take a CBT practice
               </button>
             </div>
           )}
@@ -126,15 +184,18 @@ export default function ActivityAndAnnouncements({ onNavigate }: ActivityAndAnno
               onClick={() => onNavigate && onNavigate('announcements')}
               className="p-4 rounded-xl border border-slate-800 bg-slate-900/50 hover:border-slate-700 hover:bg-slate-800/80 transition-all cursor-pointer"
             >
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-mono font-medium px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+              <div className="flex items-center justify-between gap-2 mb-2 min-w-0">
+                <span className="text-xs font-mono font-medium px-2 py-0.5 rounded bg-slate-800 text-slate-300 truncate min-w-0">
                   {announcement.created_by || 'Admin'}
                 </span>
-                <span className="text-xs font-poppins text-slate-500">
+                <span className="text-xs font-poppins text-slate-500 shrink-0">
                   {new Date(announcement.created_at).toLocaleDateString()}
                 </span>
               </div>
-              <p className="text-sm font-body font-medium text-slate-200">
+              {/* break-words + min-w-0 keep an unbroken string (long URL, no-space
+                  text) inside the card instead of widening it or the page. The
+                  card is not height-constrained, so it grows instead of clipping. */}
+              <p className="text-sm font-body font-medium text-slate-200 break-words min-w-0 [overflow-wrap:anywhere]">
                 {announcement.title}
               </p>
             </motion.div>

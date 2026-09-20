@@ -19,7 +19,6 @@ export default function QuickActions({ onNavigate }: QuickActionsProps) {
   const actions = [
     ...(studentPortal !== 'UTME' ? [{ icon: BookOpen, label: 'Academic Materials', color: 'from-blue-500 to-indigo-600', shadow: 'shadow-blue-500/20', id: 'academic-materials' }] : []),
     cbtAction,
-    { icon: RefreshCcw, label: 'Revision Mode', color: 'from-cyan-400 to-cyan-600', shadow: 'shadow-cyan-500/20', id: 'revision' },
     { icon: BarChart2, label: 'Performance Analytics', color: 'from-orange-400 to-orange-600', shadow: 'shadow-orange-500/20', id: 'analytics' },
   ];
 

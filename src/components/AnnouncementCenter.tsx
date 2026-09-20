@@ -389,8 +389,8 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
                     </span>
                   </div>
                   
-                  <h3 className="text-lg font-bold text-white leading-tight">{ann.title}</h3>
-                  <p className="text-sm text-slate-400 line-clamp-2">{ann.description || ann.content || ''}</p>
+                  <h3 className="text-lg font-bold text-white leading-tight break-words [overflow-wrap:anywhere]">{ann.title}</h3>
+                  <p className="text-sm text-slate-400 line-clamp-2 break-words [overflow-wrap:anywhere]">{ann.description || ann.content || ''}</p>
                   
                   <div className="flex items-center gap-4 text-xs font-medium text-slate-500">
                     <span className="flex items-center gap-1"><Users size={14} /> To: {ann.target || ann.target_audience || ann.target_role || 'Everyone'}</span>
@@ -552,7 +552,7 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
                       <h3 className={`text-base font-bold truncate ${isUnread ? 'text-white' : 'text-slate-300'}`}>
                         {notif.title}
                       </h3>
-                      <p className="text-sm text-slate-400 mt-1 line-clamp-2">
+                      <p className="text-sm text-slate-400 mt-1 line-clamp-2 break-words [overflow-wrap:anywhere]">
                         {notif.message}
                       </p>
                     </div>
@@ -607,8 +607,11 @@ export default function AnnouncementCenter({ onBack, onNavigate }: { onBack?: ()
               </div>
 
               <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
-                <h2 className="text-xl font-bold text-white">{selectedNotification.title}</h2>
-                <div className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap bg-[#020617] border border-slate-800/80 rounded-2xl p-5">
+                <h2 className="text-xl font-bold text-white break-words [overflow-wrap:anywhere]">{selectedNotification.title}</h2>
+                {/* The full message: whitespace-pre-wrap keeps the author's line
+                    breaks, break-words/anywhere stops a long unbroken string from
+                    escaping the box. Nothing is clipped — the modal body scrolls. */}
+                <div className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-[#020617] border border-slate-800/80 rounded-2xl p-5">
                   {selectedNotification.message}
                 </div>
                 {selectedNotification.link && (

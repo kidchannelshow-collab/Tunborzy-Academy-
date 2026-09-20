@@ -6,7 +6,8 @@ import { useProfile } from '../../lib/useProfile';
 
 interface UTMEDashboardProps {
   onStartExam: (config: any) => void;
-  onViewHistory: () => void;
+  /** Opens the review for one specific saved attempt, by its own id. */
+  onViewHistory: (attemptId: string) => void;
 }
 
 export default function UTMEDashboard({ onStartExam, onViewHistory }: UTMEDashboardProps) {
@@ -103,12 +104,19 @@ export default function UTMEDashboard({ onStartExam, onViewHistory }: UTMEDashbo
 
       // Fetch history for student
       if (profile) {
+        // Only COMPLETED sittings. Without this filter the list also held the
+        // in_progress row created when a CBT is started, so "CBT Taken Today"
+        // and "Total Attempts" counted starts rather than finished CBTs.
+        // student_id is the identity column on this table (not user_id), and
+        // created_at is the only timestamp it has — the row is written when the
+        // sitting starts and stamped completed on submit.
         const { data: histData } = await supabase
           .from('utme_attempts')
           .select('*, utme_subjects(name)')
           .eq('student_id', profile.id)
+          .eq('status', 'completed')
           .order('created_at', { ascending: false });
-        
+
         setHistory(histData || []);
       }
     } catch (err) {
@@ -130,8 +138,13 @@ export default function UTMEDashboard({ onStartExam, onViewHistory }: UTMEDashbo
       .from('utme_topics')
       .select('*')
       .eq('subject_id', sub.id);
-    
-    setTopics(data || []);
+
+    // Filtered client-side rather than with .eq('is_active', true): is_active is
+    // added to utme_topics by migration 0054, and a server-side filter would
+    // make this student-facing query fail outright until that migration is run.
+    // `!== false` treats a missing/NULL value as active, so the list is correct
+    // both before and after 0054.
+    setTopics((data || []).filter((t: any) => t.is_active !== false));
 
     // Fetch questions for this subject to extract years and difficulties
     const { data: qData } = await supabase
@@ -266,16 +279,26 @@ export default function UTMEDashboard({ onStartExam, onViewHistory }: UTMEDashbo
                   whileHover={{ y: -4, scale: 1.01 }}
                   whileTap={{ scale: 0.99 }}
                   onClick={() => handleSelectSubject(sub)}
-                  className="bg-[#0f172a] border border-slate-800 hover:border-emerald-500/50 rounded-2xl p-6 cursor-pointer group transition-all flex flex-col justify-between"
+                  className="bg-[#0f172a] border border-slate-800 hover:border-amber-500/50 rounded-2xl p-6 cursor-pointer group transition-all flex flex-col justify-between min-w-0 overflow-hidden"
                 >
-                  <div>
-                    <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold mb-4 group-hover:bg-emerald-500 group-hover:text-slate-950 transition-colors">
-                      {sub.code}
+                  <div className="min-w-0">
+                    {/* Fixed-size badge. It used to render the raw `sub.code` at
+                        inherited size with no clipping, so a subject whose code
+                        is a long string (or simply repeats its name) spilled out
+                        of the 48px box and overlapped the title — which read as
+                        duplicated text. The badge now shows a short code, is
+                        clipped, and cannot grow. */}
+                    <div className="w-12 h-12 shrink-0 overflow-hidden rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 text-xs font-bold tracking-tight mb-4 group-hover:bg-amber-500 group-hover:text-slate-950 transition-colors">
+                      {String(sub.code || sub.name || '?').replace(/[^A-Za-z0-9]/g, '').slice(0, 4).toUpperCase() || '?'}
                     </div>
-                    <h3 className="text-xl font-bold text-white group-hover:text-emerald-400 transition-colors">{sub.name}</h3>
-                    <p className="text-sm text-slate-400 mt-2 line-clamp-2">{sub.description || 'Comprehensive UTME questions and practice exams.'}</p>
+                    <h3 className="text-xl font-bold text-white group-hover:text-amber-400 transition-colors break-words [overflow-wrap:anywhere]">
+                      {sub.name}
+                    </h3>
+                    <p className="text-sm text-slate-400 mt-2 line-clamp-2 break-words [overflow-wrap:anywhere]">
+                      {sub.description || 'Comprehensive UTME questions and practice exams.'}
+                    </p>
                   </div>
-                  <div className="mt-6 pt-4 border-t border-slate-800/60 flex items-center justify-between text-sm text-emerald-400 font-medium">
+                  <div className="mt-6 pt-4 border-t border-slate-800/60 flex items-center justify-between text-sm text-amber-400 font-medium">
                     <span>Start Practice</span>
                     <ChevronRight size={18} className="group-hover:translate-x-1 transition-transform" />
                   </div>
@@ -292,20 +315,33 @@ export default function UTMEDashboard({ onStartExam, onViewHistory }: UTMEDashbo
           {history.length > 0 && (
             <div className="mt-12 space-y-4">
               <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                <History className="text-emerald-400" size={20} /> Recent Practice History
+                <Award className="text-amber-400" size={20} /> Recent Practice History
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* Each card opens ITS OWN attempt — the id is passed through
+                    rather than a generic "history" view, so the review loads the
+                    exact sitting that was clicked. */}
                 {history.slice(0, 3).map(h => (
-                  <div key={h.id} className="bg-[#0f172a] border border-slate-800 rounded-2xl p-4 flex items-center justify-between">
-                    <div>
-                      <div className="text-sm font-bold text-white">{h.utme_subjects?.name || 'UTME Drill'}</div>
+                  <button
+                    key={h.id}
+                    type="button"
+                    onClick={() => onViewHistory(h.id)}
+                    className="text-left bg-[#0f172a] border border-slate-800 hover:border-amber-500/50 rounded-2xl p-4 flex items-center justify-between gap-3 min-w-0 w-full cursor-pointer transition-colors group"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-white truncate group-hover:text-amber-400 transition-colors">
+                        {h.utme_subjects?.name || 'UTME Drill'}
+                      </div>
                       <div className="text-xs text-slate-400">{new Date(h.created_at).toLocaleDateString()}</div>
                     </div>
-                    <div className="text-right">
-                      <div className="text-lg font-bold text-emerald-400">{h.score}%</div>
-                      <div className="text-xs text-slate-500">{h.total_correct}/{h.total_correct + h.total_wrong} Correct</div>
+                    <div className="text-right shrink-0 flex items-center gap-2">
+                      <div>
+                        <div className="text-lg font-bold text-amber-400">{h.score}%</div>
+                        <div className="text-xs text-slate-500">{h.total_correct}/{h.total_correct + h.total_wrong} Correct</div>
+                      </div>
+                      <ChevronRight size={16} className="text-slate-600 group-hover:text-amber-400 group-hover:translate-x-0.5 transition-all" />
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>

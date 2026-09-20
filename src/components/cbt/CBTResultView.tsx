@@ -159,7 +159,7 @@ export default function CBTResultView({ attemptId, onReview, onBackToDashboard }
               <Brain className="text-amber-500" size={20} /> Performance Insights
             </h3>
             <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl text-amber-500 mb-6 text-sm leading-relaxed">
-              Based on your performance, you answered {result.total_correct} correctly but missed {result.total_wrong} questions. Your accuracy rate is {accuracy}%. To improve to an A grade, focus your revision on the topics related to the {result.total_wrong} questions you missed. Taking another practice test in 'Revision Mode' will automatically target these weak areas.
+              Based on your performance, you answered {result.total_correct} correctly but missed {result.total_wrong} questions. Your accuracy rate is {accuracy}%. To improve to an A grade, review the topics behind the {result.total_wrong} questions you missed, then take another practice test to track your progress.
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

@@ -1,7 +1,7 @@
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  LayoutDashboard, Users, UserCog, BookOpen, Database, Bot, LineChart, Settings, MessageSquare, Bell,
-  History, LogOut, X, ChevronRight, Star, Activity, FileCheck, FileText, Building2, GraduationCap, Tag
+  LayoutDashboard, Users, UserCog, BookOpen, Database, LineChart, Settings, Bell,
+  History, LogOut, X, ChevronRight, FileCheck, FileText, Building2, Tag, PenTool
 } from 'lucide-react';
 
 interface AdminSidebarProps {
@@ -20,13 +20,9 @@ export default function AdminSidebar({ isOpen, setIsOpen, onLogout, currentView,
     { icon: BookOpen, label: 'Course Management', id: 'courses' },
     { icon: FileText, label: 'UTME CBT Manager', id: 'utme' },
     { icon: Building2, label: 'Post-UTME Manager', id: 'post-utme' },
+    { icon: PenTool, label: 'Undergraduate Manager', id: 'ug_cbt' },
     { icon: FileCheck, label: 'Pending Reviews', id: 'reviews' },
-    { icon: Bot, label: 'AI Management', id: 'ai' },
-    { icon: MessageSquare, label: 'Conversations', id: 'conversations' },
-    { icon: Star, label: 'AI Feedback', id: 'feedback' },
-    { icon: Activity, label: 'AI Performance', id: 'ai_performance' },
-    { icon: LineChart, label: 'Analytics', id: 'analytics' },
-    { icon: GraduationCap, label: 'Undergraduate Performance', id: 'ug_performance' },
+    { icon: LineChart, label: 'Analytics & Reports', id: 'analytics' },
     { icon: Tag, label: 'Partnership Management', id: 'partnerships' },
     { icon: Bell, label: 'Announcement Manager', id: 'announcements' },
     { icon: Settings, label: 'System Settings', id: 'settings' },
@@ -38,7 +34,22 @@ export default function AdminSidebar({ isOpen, setIsOpen, onLogout, currentView,
     setIsOpen(false);
   };
 
-  const SidebarContent = () => (
+  /**
+   * Held as a JSX value, NOT as a component.
+   *
+   * This was `const SidebarContent = () => (…)` rendered as `<SidebarContent />`.
+   * A component declared in the render body gets a brand-new function identity
+   * on every render, and React compares element types by reference — so each
+   * render saw a *different* component type and unmounted/remounted the whole
+   * subtree, scroll container included. Clicking a nav item re-renders this
+   * sidebar (currentView changes), which threw away the scroll position and
+   * snapped the menu back to the top.
+   *
+   * Storing the element instead of a component keeps the type stable (`div`),
+   * so React reconciles in place and the scroll offset survives navigation.
+   * The markup below is unchanged.
+   */
+  const sidebarContent = (
     <div className="flex flex-col h-full overflow-y-auto custom-scrollbar">
       <div className="p-6 flex items-center justify-between">
         <h1 className="text-2xl font-display font-bold bg-gradient-to-r from-violet-400 to-indigo-600 bg-clip-text text-transparent uppercase tracking-wider">
@@ -112,7 +123,7 @@ export default function AdminSidebar({ isOpen, setIsOpen, onLogout, currentView,
           isOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <SidebarContent />
+        {sidebarContent}
       </motion.aside>
     </>
   );

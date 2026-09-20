@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
+import {
   X, AlertTriangle, Save, Globe, Eye, Plus, GripVertical, Image as ImageIcon, Edit2,
-  Type, AlignLeft, Music, Video, List, Sigma, 
-  BookOpen, Trash2, Link as LinkIcon, Upload, ArrowUp, ArrowDown
+  Type, AlignLeft, Music, Video, List, Sigma,
+  BookOpen, Trash2, Link as LinkIcon, Upload, ArrowUp, ArrowDown,
+  Bold, Italic, Heading, ListOrdered
 } from 'lucide-react';
 import { supabase } from '../../supabaseClient';
 import ReactMarkdown from 'react-markdown';
@@ -84,6 +85,126 @@ const BLOCK_TYPES: { type: BlockType; label: string; icon: any }[] = [
   { type: 'references', label: 'References', icon: LinkIcon },
 ];
 
+/**
+ * Small formatting toolbar over a plain textarea.
+ *
+ * It writes Markdown into the block's existing `content` string rather than
+ * introducing a rich-text document format — so a formatted lesson is stored
+ * exactly like an unformatted one, survives a reload, and renders through the
+ * same ReactMarkdown pipeline the student viewer already uses. Markdown (not a
+ * contentEditable surface) also keeps the stored value diffable and safe.
+ *
+ * Deliberately just the basics: bold, italic, heading, bulleted list, numbered
+ * list and link. No tables, no embeds, no nested structure.
+ */
+function RichTextEditor({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  placeholder?: string;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  const restore = (el: HTMLTextAreaElement, start: number, end: number) => {
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(start, end);
+    });
+  };
+
+  /** Wraps the current selection (or the caret) in `token` on both sides. */
+  const wrapSelection = (token: string) => {
+    const el = ref.current;
+    if (!el) return;
+    const { selectionStart: start, selectionEnd: end } = el;
+    const selected = value.slice(start, end);
+    onChange(value.slice(0, start) + token + selected + token + value.slice(end));
+    // Keep the inner text selected so a second click does not double-wrap.
+    restore(el, start + token.length, start + token.length + selected.length);
+  };
+
+  /**
+   * Prefixes every line the selection touches. Leading Markdown markers are
+   * stripped first so switching a bulleted list to a numbered one replaces the
+   * marker instead of stacking "1. - item".
+   */
+  const prefixLines = (prefix: string, numbered = false) => {
+    const el = ref.current;
+    if (!el) return;
+    const { selectionStart: start, selectionEnd: end } = el;
+
+    const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    const nextBreak = value.indexOf('\n', end);
+    const lineEnd = nextBreak === -1 ? value.length : nextBreak;
+
+    const formatted = value
+      .slice(lineStart, lineEnd)
+      .split('\n')
+      .map((line, i) => {
+        const stripped = line.replace(/^(\s*)(?:[-*+]\s+|\d+\.\s+|#{1,6}\s+)?/, '$1');
+        return numbered ? `${i + 1}. ${stripped}` : `${prefix}${stripped}`;
+      })
+      .join('\n');
+
+    onChange(value.slice(0, lineStart) + formatted + value.slice(lineEnd));
+    restore(el, lineStart, lineStart + formatted.length);
+  };
+
+  const insertLink = () => {
+    const el = ref.current;
+    if (!el) return;
+    const { selectionStart: start, selectionEnd: end } = el;
+    const selected = value.slice(start, end);
+    const label = selected || 'link text';
+    const markdown = `[${label}](https://)`;
+    onChange(value.slice(0, start) + markdown + value.slice(end));
+    // Park the caret inside the empty URL so it can be typed straight away.
+    const urlStart = start + label.length + 3;
+    restore(el, urlStart, urlStart + 8);
+  };
+
+  const tools: { icon: any; title: string; run: () => void }[] = [
+    { icon: Bold, title: 'Bold', run: () => wrapSelection('**') },
+    { icon: Italic, title: 'Italic', run: () => wrapSelection('*') },
+    { icon: Heading, title: 'Heading', run: () => prefixLines('## ') },
+    { icon: List, title: 'Bulleted list', run: () => prefixLines('- ') },
+    { icon: ListOrdered, title: 'Numbered list', run: () => prefixLines('', true) },
+    { icon: LinkIcon, title: 'Link', run: insertLink },
+  ];
+
+  return (
+    <div className="rounded-xl border border-slate-800 bg-[#020617] focus-within:border-blue-500 transition-colors">
+      <div className="flex flex-wrap items-center gap-1 px-2 py-1.5 border-b border-slate-800">
+        {tools.map((tool) => (
+          <button
+            key={tool.title}
+            type="button"
+            title={tool.title}
+            aria-label={tool.title}
+            onClick={tool.run}
+            className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+          >
+            <tool.icon size={15} />
+          </button>
+        ))}
+        <span className="ml-auto pr-1 text-[10px] text-slate-600 hidden sm:inline">
+          Markdown
+        </span>
+      </div>
+      <textarea
+        ref={ref}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full bg-transparent border-none p-4 text-slate-200 placeholder:text-slate-600 focus:ring-0 outline-none min-h-[140px] resize-y custom-scrollbar leading-relaxed"
+      />
+    </div>
+  );
+}
+
 export default function LessonEditor({ courseCode, topic, portal, semester, lesson, onClose, onSaved }: LessonEditorProps) {
   const [blocks, setBlocks] = useState<LessonBlock[]>([]);
   const [attachments, setAttachments] = useState<LessonAttachment[]>([]);
@@ -96,6 +217,9 @@ export default function LessonEditor({ courseCode, topic, portal, semester, less
   const [status, setStatus] = useState<'draft' | 'published'>('draft');
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
+  // Id of a lesson this editor created, so saving again updates it rather than
+  // inserting a second copy while the parent still holds a null `lesson` prop.
+  const createdLessonIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (lesson) {
@@ -131,7 +255,7 @@ export default function LessonEditor({ courseCode, topic, portal, semester, less
   useEffect(() => {
     const timer = setTimeout(() => {
       if (blocks.length > 0 && status === 'draft' && lesson) {
-        handleSave(false);
+        handleSave(false, { silent: true });
       }
     }, 15000); // Autosave every 15s if draft and editing existing
     return () => clearTimeout(timer);
@@ -214,14 +338,18 @@ export default function LessonEditor({ courseCode, topic, portal, semester, less
     return titleBlock?.content || 'Untitled Lesson';
   };
 
-  const handleSave = async (publish: boolean) => {
+  /**
+   * `silent` is set by the 15s draft autosave: it still writes, but skips the
+   * `onSaved()` refresh so a background save does not churn the admin list.
+   */
+  const handleSave = async (publish: boolean, { silent = false }: { silent?: boolean } = {}) => {
     if (!supabase) return;
     setIsSaving(true);
-    
+
     try {
       const { data: userData } = await supabase.auth.getUser();
       const userId = userData?.user?.id;
-      
+
       let lecturerName = 'Admin';
       if (userId) {
         const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', userId).single();
@@ -238,35 +366,41 @@ export default function LessonEditor({ courseCode, topic, portal, semester, less
         file_type: 'lesson',
         is_published: publish,
         lecturer_id: userId,
-        lecturer_name: lecturerName
+        lecturer_name: lecturerName,
+        // `materials.file_url` is NOT NULL with no default. A lesson carries its
+        // content in `description`, so there is no file to point at — the '#'
+        // sentinel is the app's established "no file" marker (CourseManagement
+        // only renders a download link when `file_url !== '#'`).
+        //
+        // Leaving this out is what made lessons silently fail to save: the
+        // insert raised a not-null violation and, because the result was never
+        // checked, the editor still reported success and closed.
+        file_url: '#',
       };
 
-      if (lesson) {
-        await supabase.from('materials').update(lessonData).eq('id', lesson.id);
+      // Resolved once, then reused, so repeatedly saving a brand-new lesson
+      // updates the row it created instead of inserting another copy.
+      const existingId = lesson?.id ?? createdLessonIdRef.current;
+
+      if (existingId) {
+        const { error } = await supabase.from('materials').update(lessonData).eq('id', existingId);
+        if (error) throw error;
       } else {
-        await supabase.from('materials').insert([lessonData]);
+        const { data, error } = await supabase.from('materials').insert([lessonData]).select('id').single();
+        if (error) throw error;
+        if (data?.id) createdLessonIdRef.current = data.id;
       }
-      
+
       setStatus(publish ? 'published' : 'draft');
-      if (publish || !lesson) {
-         onSaved();
-      }
-    } catch (error) {
+      if (!silent) onSaved();
+    } catch (error: any) {
+      // Surfaced rather than swallowed: a failed save used to look identical to
+      // a successful one, which is how the missing-file_url bug stayed hidden.
       console.error('Error saving lesson:', error);
-      alert('Error saving lesson');
+      alert(`Could not save this lesson: ${error?.message || 'unknown error'}`);
     }
     setIsSaving(false);
   };
-
-  const renderRichTextHelp = () => (
-    <div className="text-[10px] text-slate-500 mt-1 flex gap-2">
-      <span>**Bold**</span>
-      <span>*Italic*</span>
-      <span># Heading</span>
-      <span>- List</span>
-      <span>$Math$</span>
-    </div>
-  );
 
   return (
     <div className="fixed inset-0 z-50 bg-[#020617] flex flex-col">
@@ -416,21 +550,20 @@ export default function LessonEditor({ courseCode, topic, portal, semester, less
 
                 {(block.type === 'intro' || block.type === 'main' || block.type === 'example' || block.type === 'summary' || block.type === 'references' || block.type === 'formula') && (
                   isPreviewMode ? (
-                    <div className="prose prose-invert max-w-none prose-pre:bg-slate-900 prose-pre:border prose-pre:border-slate-800 overflow-x-auto custom-scrollbar">
+                    // `lesson-content` is the same class the student viewer uses,
+                    // so this preview is what students actually see. (`prose` was
+                    // inert here — the typography plugin is not installed.)
+                    <div className="lesson-content overflow-x-auto custom-scrollbar">
                       <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
                         {block.content}
                       </ReactMarkdown>
                     </div>
                   ) : (
-                    <div>
-                      <textarea
-                        value={block.content}
-                        onChange={(e) => handleUpdateBlock(block.id, { content: e.target.value })}
-                        placeholder={`Enter ${block.type} content (Markdown supported)...`}
-                        className="w-full bg-[#020617] border border-slate-800 rounded-xl p-4 text-slate-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none min-h-[120px] resize-y custom-scrollbar"
-                      />
-                      {renderRichTextHelp()}
-                    </div>
+                    <RichTextEditor
+                      value={block.content}
+                      onChange={(next) => handleUpdateBlock(block.id, { content: next })}
+                      placeholder={`Write the ${block.type} here — use the toolbar for bold, headings and lists.`}
+                    />
                   )
                 )}
 

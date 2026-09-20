@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
+import { supabase } from '../../supabaseClient';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Building2, BookOpen, Clock, Award, CheckCircle2, XCircle, ArrowRight, ArrowLeft, 
   RefreshCcw, AlertCircle, Check, Play, ShieldAlert, BarChart2, Calendar
 } from 'lucide-react';
+import { POST_UTME_UNIVERSITY_NAME } from '../../lib/postUtme';
 
 interface PostUtmeExam {
   id: string;
@@ -55,7 +57,6 @@ export default function PostUtmeDrillPage() {
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [attemptId, setAttemptId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [filterUni, setFilterUni] = useState('ALL');
   const [todayStats, setTodayStats] = useState({ coursesToday: 0, cbtTakenToday: 0, avgScoreToday: 0 });
 
   useEffect(() => {
@@ -65,11 +66,6 @@ export default function PostUtmeDrillPage() {
 
   const fetchTodayStats = async () => {
     try {
-      const { createClient } = await import('@supabase/supabase-js');
-      const supabase = createClient(
-        import.meta.env.VITE_SUPABASE_URL,
-        import.meta.env.VITE_SUPABASE_ANON_KEY
-      );
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
@@ -133,11 +129,6 @@ export default function PostUtmeDrillPage() {
   const fetchPublishedExams = async () => {
     setLoading(true);
     try {
-      const { createClient } = await import('@supabase/supabase-js');
-      const supabase = createClient(
-        import.meta.env.VITE_SUPABASE_URL,
-        import.meta.env.VITE_SUPABASE_ANON_KEY
-      );
       const { data, error } = await supabase
         .from('post_utme_exams')
         .select('*')
@@ -156,11 +147,6 @@ export default function PostUtmeDrillPage() {
   const handleStartTest = async (exam: PostUtmeExam) => {
     setLoading(true);
     try {
-      const { createClient } = await import('@supabase/supabase-js');
-      const supabase = createClient(
-        import.meta.env.VITE_SUPABASE_URL,
-        import.meta.env.VITE_SUPABASE_ANON_KEY
-      );
 
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token;
@@ -201,11 +187,6 @@ export default function PostUtmeDrillPage() {
     setTestState('submitting');
 
     try {
-      const { createClient } = await import('@supabase/supabase-js');
-      const supabase = createClient(
-        import.meta.env.VITE_SUPABASE_URL,
-        import.meta.env.VITE_SUPABASE_ANON_KEY
-      );
 
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token;
@@ -236,7 +217,10 @@ export default function PostUtmeDrillPage() {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const filteredExams = exams.filter(e => filterUni === 'ALL' || e.university === filterUni);
+  // Was filtered by a university picker. Post-UTME is single-university now, so
+  // every published paper is shown. Filtering by the stored value rather than a
+  // hardcoded code also keeps papers created before this change reachable.
+  const filteredExams = exams;
 
   if (testState === 'selecting') {
     return (
@@ -246,9 +230,12 @@ export default function PostUtmeDrillPage() {
             <span className="bg-indigo-500/30 text-indigo-200 text-xs font-semibold px-3 py-1 rounded-full border border-indigo-400/30">
               Post-UTME Past Questions & CBT Drills
             </span>
-            <h1 className="text-3xl font-extrabold tracking-tight">University Screening CBT</h1>
+            <h1 className="text-3xl font-extrabold tracking-tight">
+              {POST_UTME_UNIVERSITY_NAME} Screening CBT
+            </h1>
             <p className="text-indigo-200 text-sm max-w-2xl leading-relaxed">
-              Practice timed university past questions (UNILAG, UI, UNN, OAU, ABU) with secure server-side grading and detailed performance reviews.
+              Practice timed {POST_UTME_UNIVERSITY_NAME} Post-UTME past questions with secure
+              server-side grading and detailed performance reviews.
             </p>
           </div>
           <div className="absolute right-0 bottom-0 opacity-10 translate-x-8 translate-y-8">
@@ -257,36 +244,41 @@ export default function PostUtmeDrillPage() {
         </div>
 
         {/* Today's Progress Section */}
+        {/* Today's Progress — same card proportions, spacing and icon chips as
+            the UTME dashboard. These were previously light `bg-white`/gray cards
+            sitting inside an otherwise dark surface, which read as a different
+            product. Values are unchanged and still come from the student's own
+            completed `post_utme_attempts`. */}
         <div className="space-y-4">
-          <h3 className="text-xl font-display font-bold text-gray-900 dark:text-white flex items-center gap-2">
-            <Clock className="text-indigo-500" size={20} /> Today's Progress
+          <h3 className="text-xl font-display font-bold text-white flex items-center gap-2">
+            <Clock className="text-amber-400" size={20} /> Today's Progress
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-5 flex items-center gap-4 shadow-sm">
-              <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-500">
+            <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-5 flex items-center gap-4 shadow-lg">
+              <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400">
                 <BookOpen size={24} />
               </div>
               <div>
-                <div className="text-2xl font-bold text-gray-900 dark:text-white">{todayStats.coursesToday}</div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">Courses Enrolled Today</div>
+                <div className="text-2xl font-bold text-white">{todayStats.coursesToday}</div>
+                <div className="text-xs text-slate-400">Courses Enrolled Today</div>
               </div>
             </div>
-            <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-5 flex items-center gap-4 shadow-sm">
-              <div className="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-500">
+            <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-5 flex items-center gap-4 shadow-lg">
+              <div className="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400">
                 <Clock size={24} />
               </div>
               <div>
-                <div className="text-2xl font-bold text-gray-900 dark:text-white">{todayStats.cbtTakenToday}</div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">CBT Taken Today</div>
+                <div className="text-2xl font-bold text-white">{todayStats.cbtTakenToday}</div>
+                <div className="text-xs text-slate-400">CBT Taken Today</div>
               </div>
             </div>
-            <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-5 flex items-center gap-4 shadow-sm">
-              <div className="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center text-purple-500">
+            <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-5 flex items-center gap-4 shadow-lg">
+              <div className="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center text-purple-400">
                 <Award size={24} />
               </div>
               <div>
-                <div className="text-2xl font-bold text-gray-900 dark:text-white">{todayStats.avgScoreToday}%</div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">Average CBT Score Today</div>
+                <div className="text-2xl font-bold text-white">{todayStats.avgScoreToday}%</div>
+                <div className="text-xs text-slate-400">Average CBT Score Today</div>
               </div>
             </div>
           </div>
@@ -295,21 +287,13 @@ export default function PostUtmeDrillPage() {
         <div className="flex items-center justify-between gap-4">
           <h2 className="text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
             <BookOpen className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-            Available University Past Papers
+            Available Post-UTME Papers
           </h2>
-          <select
-            value={filterUni}
-            onChange={(e) => setFilterUni(e.target.value)}
-            className="px-4 py-2 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl text-sm font-medium text-gray-900 dark:text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          >
-            <option value="ALL">All Universities</option>
-            <option value="UNILAG">UNILAG</option>
-            <option value="UI">UI</option>
-            <option value="UNN">UNN</option>
-            <option value="OAU">OAU</option>
-            <option value="ABU">ABU</option>
-            <option value="LASU">LASU</option>
-          </select>
+          {/* The university picker was removed: Post-UTME serves only the
+              University of Ilorin, so every paper below is UNILORIN. */}
+          <span className="px-4 py-2 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl text-sm font-semibold text-gray-900 dark:text-white shadow-sm">
+            {POST_UTME_UNIVERSITY_NAME}
+          </span>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

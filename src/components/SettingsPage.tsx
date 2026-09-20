@@ -389,11 +389,6 @@ export default function SettingsPage({ onLogout, onNavigate }: SettingsPageProps
                   <span className="text-sm font-mono text-indigo-400 font-bold">v1.0.0 (Web)</span>
                 </div>
                 
-                <div className="flex items-center justify-between p-4 rounded-xl bg-[#020617]/50 border border-slate-800/50">
-                  <span className="text-sm font-semibold text-slate-300">Developer</span>
-                  <span className="text-sm font-semibold text-slate-200">Emmyweb Design Agency | 08169996178</span>
-                </div>
-                
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                   <button 
                     onClick={() => setActiveModal('privacy')}

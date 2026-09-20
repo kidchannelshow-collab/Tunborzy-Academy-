@@ -29,8 +29,17 @@ export default function Sidebar({ isOpen, setIsOpen, onLogout, currentView = 'da
   ] : [
     { icon: LayoutDashboard, label: 'Dashboard', id: 'dashboard' },
     cbtItem,
-    ...(studentPortal !== 'UTME' ? [{ icon: Library, label: 'Academic Materials', id: 'academic-materials' }] : []),
-    { icon: RefreshCcw, label: 'Revision Mode', id: 'revision' },
+    // Post-UTME students get their own Course -> Topic -> Lesson view. The
+    // Undergraduate page they used to land on is hardcoded to "Undergraduate"
+    // and drills against cbt_questions/cbt_attempts, which are the wrong tables
+    // for a Post-UTME student.
+    ...(studentPortal !== 'UTME'
+      ? [{
+          icon: Library,
+          label: 'Academic Materials',
+          id: studentPortal === 'Post-UTME' ? 'post-utme-learning' : 'academic-materials',
+        }]
+      : []),
     { icon: BarChart2, label: 'Performance Analytics', id: 'analytics' },
     { icon: Bell, label: 'Announcements', id: 'announcements' },
   ];

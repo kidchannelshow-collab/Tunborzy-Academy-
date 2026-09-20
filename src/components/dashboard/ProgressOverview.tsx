@@ -16,27 +16,86 @@ export default function ProgressOverview() {
     if (!profile) return;
     const fetchStats = async () => {
       try {
-        const { data: cbtAttempts } = await supabase
-          .from('cbt_attempts')
-          .select('score, total_questions, created_at, end_time, cbt_exams(course_code)')
-          .or(`user_id.eq.${profile.id},student_id.eq.${profile.id}`)
-          .not('score', 'is', null);
+        // A student's completed sittings live in the table for their portal:
+        // UTME sittings in `utme_attempts` (keyed by `student_id`), the
+        // undergraduate drill in `cbt_attempts` (keyed by `user_id`). This read
+        // only `cbt_attempts`, so a UTME student's completed CBTs were invisible
+        // here and every figure stayed at 0 even though the UTME dashboard and
+        // the profile already showed them.
+        //
+        // Both of the student's OWN completed sittings are read and normalised
+        // into one shape, rather than branching on `profile.portal`: that value
+        // is not guaranteed to be exactly 'UTME', and a wrong guess silently
+        // produces the same zero this is fixing. `status = 'completed'` excludes
+        // started-but-unfinished attempts on both sides.
+        //
+        // Timestamps differ per table and there is no `created_at` on
+        // `cbt_attempts` — selecting one returned 42703 and failed the whole
+        // request. `utme_attempts` has only `created_at` (written when that
+        // sitting's row was created); `cbt_attempts` uses `end_time` (the
+        // completion stamp written by /api/cbt/submit), falling back to
+        // `started_at`.
+        // Post-UTME sittings live in their own table. Without it a Post-UTME
+        // student's dashboard showed 0 CBTs and a 0% average no matter how much
+        // they had actually done — the query succeeded, it just never looked
+        // here. All three are the student's own rows, so reading them together
+        // is not mixing unrelated data.
+        const [utmeRes, cbtRes, postUtmeRes] = await Promise.all([
+          supabase
+            .from('utme_attempts')
+            .select('score, percentage, created_at, utme_subjects(name)')
+            .eq('student_id', profile.id)
+            .eq('status', 'completed'),
+          supabase
+            .from('cbt_attempts')
+            .select('score, end_time, started_at, cbt_exams(course_code)')
+            .eq('user_id', profile.id)
+            .eq('status', 'completed')
+            .not('score', 'is', null),
+          supabase
+            .from('post_utme_attempts')
+            .select('score, end_time, post_utme_exams(subject)')
+            .eq('user_id', profile.id)
+            .eq('status', 'completed')
+            .not('score', 'is', null),
+        ]);
+
+        const attempts = [
+          ...(utmeRes.data || []).map((a: any) => ({
+            score: a.score ?? a.percentage ?? null,
+            finishedAt: a.created_at,
+            course: a.utme_subjects?.name,
+          })),
+          ...(cbtRes.data || []).map((a: any) => ({
+            score: a.score ?? null,
+            finishedAt: a.end_time || a.started_at,
+            course: a.cbt_exams?.course_code,
+          })),
+          ...(postUtmeRes.data || []).map((a: any) => ({
+            score: a.score ?? null,
+            finishedAt: a.end_time,
+            course: a.post_utme_exams?.subject,
+          })),
+        ];
 
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        const todayAttempts = (cbtAttempts || []).filter((a: any) => {
-          const t = new Date(a.end_time || a.created_at);
-          return t >= today;
+        const todayAttempts = attempts.filter((a) => {
+          if (!a.finishedAt) return false;
+          return new Date(a.finishedAt) >= today;
         });
 
-        const distinctCourses = new Set(todayAttempts.map((a: any) => a.cbt_exams?.course_code).filter(Boolean)).size;
+        const distinctCourses = new Set(todayAttempts.map((a) => a.course).filter(Boolean)).size;
         const cbtCount = todayAttempts.length;
 
+        // `score` is ALREADY a percentage — both submit endpoints write
+        // Math.round(correct / total * 100). Dividing it by a question total
+        // again multiplied every average.
         let sum = 0;
-        todayAttempts.forEach((a: any) => {
-          if (a.total_questions > 0 && a.score !== null && a.score !== undefined) {
-            sum += (a.score / a.total_questions) * 100;
+        todayAttempts.forEach((a) => {
+          if (a.score !== null && a.score !== undefined) {
+            sum += Number(a.score);
           }
         });
         const cbtAvg = cbtCount > 0 ? Math.round(sum / cbtCount) : 0;

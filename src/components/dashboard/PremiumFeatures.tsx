@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { Lock, Crown, RefreshCcw, PenTool, CheckCircle2, Loader2 } from 'lucide-react';
+import { Lock, Crown, RefreshCcw, PenTool, CheckCircle2, Loader2, BookOpen } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useProfile } from '../../lib/useProfile';
 import { supabase } from '../../supabaseClient';
@@ -170,9 +170,35 @@ export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
     }
   };
 
-  const lockedFeatures = [
-    { title: 'Revision Mode', icon: RefreshCcw, desc: 'Smart spaced repetition for better retention.', id: 'revision' },
-    { title: 'Premium CBT', icon: PenTool, desc: 'Full-length timed mock exams with analytics.', id: 'cbt' },
+  // A UTME student's CBT lives on the 'utme' route. This card used to hard-code
+  // id 'cbt', which is the undergraduate practice page, so clicking Premium CBT
+  // on the UTME student dashboard opened the wrong CBT flow. Only an explicitly
+  // Undergraduate portal keeps the undergraduate route.
+  const cbtRoute = profile?.portal === 'Undergraduate' ? 'cbt' : 'utme';
+
+  // Post-UTME and Undergraduate students reach their lessons through the
+  // Academic Materials system, so each gets a card pointing at it. UTME has no
+  // materials system, so it is not offered there. A Post-UTME student's lessons
+  // live on their own learning route — the same one their sidebar opens — and
+  // Undergraduate keeps the original route.
+  const materialsRoute =
+    profile?.portal === 'Post-UTME' ? 'post-utme-learning' : 'academic-materials';
+
+  const features: { title: string; icon: any; desc: string; id: string; unlocked?: boolean }[] = [
+    { title: 'Premium CBT', icon: PenTool, desc: 'Full-length timed mock exams with analytics.', id: cbtRoute },
+    ...(profile?.portal === 'UTME'
+      ? []
+      : [
+          {
+            title: 'Academic Materials',
+            icon: BookOpen,
+            desc: 'Read your course lessons and topic notes, published by your lecturers.',
+            id: materialsRoute,
+            // Free for every student, so it must not sit behind the premium
+            // lock the other cards use.
+            unlocked: true,
+          },
+        ]),
   ];
 
   return (
@@ -262,17 +288,21 @@ export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
 
         {/* Locked Features Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
-          {lockedFeatures.map((feature, index) => (
-            <motion.div 
+          {features.map((feature, index) => {
+            // An unlocked card (Academic Materials) is free for everyone, so it
+            // renders plainly whatever the premium status.
+            const locked = !isPremium && !feature.unlocked;
+            return (
+            <motion.div
               key={index}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: index * 0.1 }}
-              whileHover={!isPremium ? { y: -5 } : { y: -5, boxShadow: "0 10px 30px -10px rgba(0,0,0,0.5)" }}
+              whileHover={!locked ? { y: -5 } : { y: -5, boxShadow: "0 10px 30px -10px rgba(0,0,0,0.5)" }}
               onClick={() => { if (onNavigate) onNavigate(feature.id); }}
-              className={`relative overflow-hidden rounded-2xl bg-[#0f172a]/80 backdrop-blur-md border border-slate-800 p-6 shadow-lg ${!isPremium ? 'cursor-pointer group' : ''}`}
+              className={`relative overflow-hidden rounded-2xl bg-[#0f172a]/80 backdrop-blur-md border border-slate-800 p-6 shadow-lg cursor-pointer ${locked ? 'group' : 'hover:border-amber-500/40 transition-colors'}`}
             >
-              {!isPremium && (
+              {locked && (
                 <div className="absolute inset-0 bg-[#020617]/50 backdrop-blur-[2px] z-10 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                   <div className="w-12 h-12 rounded-full bg-slate-900/90 border border-slate-700 flex items-center justify-center mb-2 shadow-xl transform translate-y-4 group-hover:translate-y-0 transition-transform duration-300">
                     <Lock size={20} className="text-amber-500" />
@@ -283,12 +313,12 @@ export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
                 </div>
               )}
 
-              <div className={`relative z-0 ${!isPremium ? 'opacity-60 grayscale-[40%] transition-all duration-300 group-hover:blur-sm' : ''}`}>
+              <div className={`relative z-0 ${locked ? 'opacity-60 grayscale-[40%] transition-all duration-300 group-hover:blur-sm' : ''}`}>
                 <div className="flex items-center justify-between mb-4">
                   <div className="w-12 h-12 rounded-xl bg-slate-800/80 flex items-center justify-center shadow-inner">
                     <feature.icon size={24} className="text-amber-500" />
                   </div>
-                  {!isPremium && (
+                  {locked && (
                     <div className="w-8 h-8 rounded-full bg-slate-900/50 flex items-center justify-center border border-slate-800">
                       <Lock size={14} className="text-slate-500" />
                     </div>
@@ -298,7 +328,8 @@ export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
                 <p className="text-sm font-body text-slate-400 line-clamp-2 leading-relaxed">{feature.desc}</p>
               </div>
             </motion.div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -327,7 +358,7 @@ export default function PremiumFeatures({ onNavigate }: PremiumFeaturesProps) {
                 </div>
                 <h3 className="text-xl font-display font-bold text-white mb-1 relative z-10 tracking-tight">Upgrade to Premium</h3>
                 <p className="text-xs font-body text-slate-300 relative z-10 leading-relaxed max-w-[280px] mx-auto">
-                  Unlock Revision Mode, Premium CBT, and Advanced Performance Analytics.
+                  Unlock Premium CBT and Advanced Performance Analytics.
                 </p>
                 <div className="mt-4 inline-flex items-center px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-400 font-display font-bold text-sm">
                   ₦5,000 / Semester

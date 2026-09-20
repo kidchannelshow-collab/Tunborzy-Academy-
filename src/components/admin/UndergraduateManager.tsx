@@ -3,64 +3,46 @@ import { motion } from 'motion/react';
 import {
   Plus, Edit2, Trash2, Eye, EyeOff, BookOpen, Layers, FileText, Sparkles,
   Copy, Search, X, ArrowUp, ArrowDown, Archive, ArchiveRestore, Save,
-  Building2, Loader2, AlertCircle, Award, GraduationCap, Link2
+  Loader2, AlertCircle, Award, Link2, PenTool
 } from 'lucide-react';
 import { supabase } from '../../supabaseClient';
 import { useProfile } from '../../lib/useProfile';
 import AdminPdfUploader from '../cbt/AdminPdfUploader';
 import LessonEditor from '../materials/LessonEditor';
-import {
-  POST_UTME_UNIVERSITY_CODE,
-  POST_UTME_UNIVERSITY_NAME,
-} from '../../lib/postUtme';
 
 /**
- * Post-UTME Manager — the single staff surface for the Post-UTME programme.
+ * Undergraduate Manager — the staff surface for the Undergraduate programme.
  *
- * It covers four things:
- *   1. the CBT paper + question bank      (post_utme_exams / post_utme_questions)
- *   2. the PDF -> CBT importer            (AdminPdfUploader, destType="Post-UTME")
- *   3. topics for each Post-UTME subject  (course_modules)
- *   4. lessons                            (materials)
+ * Deliberately the same shape as `postutme/PostUtmeManagement.tsx`: four tabs
+ * (Question Bank, AI PDF Importer, Topics, Materials), the same two-panel
+ * category -> questions layout, the same select/publish/duplicate workflows.
+ * The two managers differ only in where the data lives:
  *
- * Lesson authoring is the only material-creation path exposed here: the file
- * upload flow is deliberately withdrawn for now rather than left half-working.
- * Existing file materials still list, publish and reorder as before.
+ *   Post-UTME      papers `post_utme_exams`     questions `post_utme_questions`
+ *   Undergraduate  papers `cbt_exams`           questions `cbt_questions`
  *
- * Post-UTME is a single-university programme — see `lib/postUtme.ts`.
+ * Undergraduate adds one level Post-UTME does not have: **semester**. Subjects
+ * (`courses.portal = 'Undergraduate'`) carry a `semester`, and so do materials,
+ * so every tab is scoped semester -> course -> topic. `cbt_exams` itself has no
+ * semester column — a paper is tied to a course code, and the course code is
+ * what `/api/cbt/start` matches a student's chosen subject against.
  *
- * Tabs 3 and 4 deliberately read and write the SAME rows that
- * `admin/CourseManagement.tsx` manages for the Post-UTME programme — this is a
- * second view of one system, not a parallel one. Nothing here introduces a new
- * table, and the lesson editor and upload modal are the existing shared
- * components, so a lesson authored here is identical to one authored in Course
- * Management.
- *
- * Post-UTME subjects live in `courses` with `portal = 'Post-UTME'`; a subject's
- * course_code is the key that materials hang off (materials have no course_id).
- *
- * Lecturer scoping reuses the existing ownership columns rather than adding a
- * permission system: `courses.lecturer_id` and `materials.lecturer_id`, plus
- * `post_utme_exams.created_by` for papers. These mirror the RLS policies in
- * migration 0034, so the UI and the database agree on who may write what.
+ * Nothing here writes to UTME or Post-UTME tables. Every query is scoped to
+ * `portal = 'Undergraduate'` or to a course code taken from that course list, so
+ * the two managers cannot bleed into each other.
  */
 
 type Tab = 'questions' | 'importer' | 'topics' | 'materials';
 
-const PORTAL = 'Post-UTME';
+const PORTAL = 'Undergraduate';
+const SEMESTERS = ['First Semester', 'Second Semester'] as const;
+type Semester = (typeof SEMESTERS)[number];
 
-/** Same comparison key the PDF importer uses, so both agree on "duplicate". */
+/** Matches the key the PDF importer uses, so both agree on "duplicate". */
 function normaliseQuestionText(s: string): string {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-function formatFileType(fileType: string | null | undefined): string {
-  if (!fileType) return 'File';
-  if (fileType === 'lesson') return 'Lesson';
-  return fileType.toUpperCase();
-}
-
-/** Import date/time, shown on papers and in the question list. */
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return 'Unknown date';
   const date = new Date(value);
@@ -74,7 +56,72 @@ function formatDateTime(value: string | null | undefined): string {
   });
 }
 
-export default function PostUtmeManagement() {
+/**
+ * Semester -> course selector shared by the Topics and Materials tabs.
+ *
+ * Declared at module scope rather than inside the manager: a component defined
+ * during render gets a fresh identity every pass, so React remounts it and the
+ * open `<select>` loses focus mid-interaction.
+ */
+function SemesterCoursePicker({
+  selectedSemester,
+  onSemesterChange,
+  courses,
+  selectedCourseId,
+  onCourseChange,
+  inputCls,
+  labelCls,
+}: {
+  selectedSemester: Semester;
+  onSemesterChange: (s: Semester) => void;
+  courses: any[];
+  selectedCourseId: string;
+  onCourseChange: (id: string) => void;
+  inputCls: string;
+  labelCls: string;
+}) {
+  return (
+    <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-5 space-y-4">
+      <div>
+        <label className={labelCls}>Semester</label>
+        <select
+          value={selectedSemester}
+          onChange={(e) => onSemesterChange(e.target.value as Semester)}
+          className={`${inputCls} mt-1`}
+        >
+          {SEMESTERS.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className={labelCls}>Undergraduate Course</label>
+        <select
+          value={selectedCourseId}
+          onChange={(e) => onCourseChange(e.target.value)}
+          className={`${inputCls} mt-1`}
+          disabled={courses.length === 0}
+        >
+          {courses.length === 0 && <option value="">No courses in this semester</option>}
+          {courses.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.course_code} — {c.title}
+            </option>
+          ))}
+        </select>
+        {courses.length === 0 && (
+          <p className="text-xs text-amber-400 mt-2">
+            No {PORTAL} courses exist for {selectedSemester}. Create them in Course Management first.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function UndergraduateManager() {
   const { profile } = useProfile();
   const isLecturer = profile?.role === 'Lecturer';
 
@@ -83,13 +130,12 @@ export default function PostUtmeManagement() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // --- CBT papers + questions ------------------------------------------------
+  // --- Papers + questions ----------------------------------------------------
   const [exams, setExams] = useState<any[]>([]);
   const [selectedExamId, setSelectedExamId] = useState<string>('');
   const [examSearch, setExamSearch] = useState('');
   const [questions, setQuestions] = useState<any[]>([]);
   const [attemptStats, setAttemptStats] = useState<{ count: number; avg: number } | null>(null);
-  // Ids ticked in the question list, for the bulk action bar.
   const [selectedQuestionIds, setSelectedQuestionIds] = useState<Set<string>>(new Set());
 
   const [isExamModalOpen, setIsExamModalOpen] = useState(false);
@@ -98,11 +144,12 @@ export default function PostUtmeManagement() {
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
   const [currentQuestion, setCurrentQuestion] = useState<any>({});
 
-  // --- Topics (course_modules) + Materials (materials) -----------------------
-  const [subjects, setSubjects] = useState<any[]>([]);
+  // --- Courses / topics / materials ------------------------------------------
+  const [courses, setCourses] = useState<any[]>([]);
   const [topics, setTopics] = useState<any[]>([]);
   const [materials, setMaterials] = useState<any[]>([]);
-  const [selectedSubjectId, setSelectedSubjectId] = useState<string>('');
+  const [selectedSemester, setSelectedSemester] = useState<Semester>('First Semester');
+  const [selectedCourseId, setSelectedCourseId] = useState<string>('');
   const [selectedTopicTitle, setSelectedTopicTitle] = useState<string>('');
 
   const [isTopicModalOpen, setIsTopicModalOpen] = useState(false);
@@ -114,7 +161,6 @@ export default function PostUtmeManagement() {
 
   useEffect(() => {
     if (profile) fetchAll();
-    // Re-scope when the signed-in role changes (e.g. profile resolves late).
   }, [profile?.id, profile?.role]);
 
   useEffect(() => {
@@ -133,9 +179,9 @@ export default function PostUtmeManagement() {
     setLoading(true);
     setError(null);
     try {
-      await Promise.all([fetchExams(), fetchSubjects()]);
+      await Promise.all([fetchExams(), fetchCourseContent()]);
     } catch (err: any) {
-      setError(err?.message || 'Failed to load Post-UTME content.');
+      setError(err?.message || 'Failed to load Undergraduate content.');
     } finally {
       setLoading(false);
     }
@@ -143,10 +189,12 @@ export default function PostUtmeManagement() {
 
   const fetchExams = async () => {
     let query = supabase
-      .from('post_utme_exams')
+      .from('cbt_exams')
       .select('*')
+      // Scoped to the Undergraduate programme so UTME/Post-UTME papers can
+      // never appear in this manager.
+      .eq('portal', PORTAL)
       .order('created_at', { ascending: false });
-    // Mirrors the 0034 lecturer policy: a lecturer owns the papers they created.
     if (isLecturer && profile?.id) query = query.eq('created_by', profile.id);
 
     const { data, error: err } = await query;
@@ -158,27 +206,30 @@ export default function PostUtmeManagement() {
   const fetchQuestions = async (examId: string) => {
     try {
       const { data, error: err } = await supabase
-        .from('post_utme_questions')
+        .from('cbt_questions')
         .select('*')
         .eq('exam_id', examId)
         .order('created_at', { ascending: true });
       if (err) throw err;
       setQuestions(data || []);
-      // The previous paper's ticks must not carry over to this one.
       setSelectedQuestionIds(new Set());
 
+      // Attempts for this paper, so the bank shows real usage. `score` is
+      // already a 0-100 percentage.
       const { data: attempts } = await supabase
-        .from('post_utme_attempts')
+        .from('cbt_attempts')
         .select('score, status')
         .eq('exam_id', examId);
 
-      const finished = (attempts || []).filter((a: any) => a.status === 'completed');
+      const finished = (attempts || []).filter(
+        (a: any) => a.status === 'completed' && a.score !== null && a.score !== undefined,
+      );
       setAttemptStats(
         finished.length
           ? {
               count: finished.length,
               avg: Math.round(
-                finished.reduce((sum: number, a: any) => sum + (a.score || 0), 0) / finished.length,
+                finished.reduce((sum: number, a: any) => sum + Number(a.score), 0) / finished.length,
               ),
             }
           : { count: 0, avg: 0 },
@@ -188,19 +239,15 @@ export default function PostUtmeManagement() {
     }
   };
 
-  const fetchSubjects = async () => {
-    let query = supabase
+  const fetchCourseContent = async () => {
+    const { data: courseRows, error: courseErr } = await supabase
       .from('courses')
       .select('*')
       .eq('portal', PORTAL)
       .order('order_index', { ascending: true })
       .order('title', { ascending: true });
-    if (isLecturer && profile?.id) query = query.eq('lecturer_id', profile.id);
-
-    const { data: subjectRows, error: err } = await query;
-    if (err) throw err;
-    setSubjects(subjectRows || []);
-    setSelectedSubjectId((prev) => prev || subjectRows?.[0]?.id || '');
+    if (courseErr) throw courseErr;
+    setCourses(courseRows || []);
 
     const [modulesRes, materialsRes] = await Promise.all([
       supabase.from('course_modules').select('*').order('order_index', { ascending: true }),
@@ -221,24 +268,31 @@ export default function PostUtmeManagement() {
   // Derived
   // ---------------------------------------------------------------------------
 
-  const selectedSubject = useMemo(
-    () => subjects.find((s) => s.id === selectedSubjectId) || null,
-    [subjects, selectedSubjectId],
+  const semesterCourses = useMemo(
+    () => courses.filter((c) => (c.semester || 'First Semester') === selectedSemester),
+    [courses, selectedSemester],
   );
 
-  const subjectTopics = useMemo(() => {
-    if (!selectedSubject) return [];
-    const rows = topics.filter((t) => t.course_id === selectedSubject.id);
-    // Archived topics stay visible to staff (greyed) so nothing becomes unreachable.
-    return rows.sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0));
-  }, [topics, selectedSubject]);
+  const selectedCourse = useMemo(
+    () => semesterCourses.find((c) => c.id === selectedCourseId) || semesterCourses[0] || null,
+    [semesterCourses, selectedCourseId],
+  );
+
+  const courseTopics = useMemo(() => {
+    if (!selectedCourse) return [];
+    return topics
+      .filter((t) => t.course_id === selectedCourse.id)
+      .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0));
+  }, [topics, selectedCourse]);
+
+  const activeTopics = courseTopics.filter((t) => t.is_archived !== true);
 
   const topicMaterials = useMemo(() => {
-    if (!selectedSubject || !selectedTopicTitle) return [];
+    if (!selectedCourse || !selectedTopicTitle) return [];
     return materials.filter(
-      (m) => m.course_code === selectedSubject.course_code && m.topic === selectedTopicTitle,
+      (m) => m.course_code === selectedCourse.course_code && m.topic === selectedTopicTitle,
     );
-  }, [materials, selectedSubject, selectedTopicTitle]);
+  }, [materials, selectedCourse, selectedTopicTitle]);
 
   const filteredExams = useMemo(() => {
     const q = examSearch.trim().toLowerCase();
@@ -246,8 +300,8 @@ export default function PostUtmeManagement() {
     return exams.filter(
       (e) =>
         (e.title || '').toLowerCase().includes(q) ||
-        (e.subject || '').toLowerCase().includes(q) ||
-        (e.university || '').toLowerCase().includes(q),
+        (e.course_code || '').toLowerCase().includes(q) ||
+        (e.subject || '').toLowerCase().includes(q),
     );
   }, [exams, examSearch]);
 
@@ -257,7 +311,7 @@ export default function PostUtmeManagement() {
   );
 
   // ---------------------------------------------------------------------------
-  // CBT paper + question actions
+  // Paper actions
   // ---------------------------------------------------------------------------
 
   const handleSaveExam = async (e: React.FormEvent) => {
@@ -267,26 +321,20 @@ export default function PostUtmeManagement() {
     try {
       const payload = {
         title: currentExam.title,
-        // Post-UTME serves a single university; the value is pinned rather than
-        // taken from the form so no other university can be written.
-        university: POST_UTME_UNIVERSITY_CODE,
-        subject: currentExam.subject,
-        course_code: currentExam.course_code || null,
-        year: currentExam.year || null,
+        course_code: currentExam.course_code,
+        subject: currentExam.course_code,
+        portal: PORTAL,
         duration_minutes: Number(currentExam.duration_minutes) || 60,
         is_published: !!currentExam.is_published,
       };
 
       if (currentExam.id) {
-        const { error: err } = await supabase
-          .from('post_utme_exams')
-          .update(payload)
-          .eq('id', currentExam.id);
+        const { error: err } = await supabase.from('cbt_exams').update(payload).eq('id', currentExam.id);
         if (err) throw err;
       } else {
         const { data, error: err } = await supabase
-          .from('post_utme_exams')
-          .insert([{ ...payload, created_by: profile?.id }])
+          .from('cbt_exams')
+          .insert([{ ...payload, created_by: profile?.id, total_questions: 0 }])
           .select()
           .single();
         if (err) throw err;
@@ -305,7 +353,7 @@ export default function PostUtmeManagement() {
 
   const togglePublishExam = async (exam: any) => {
     const { error: err } = await supabase
-      .from('post_utme_exams')
+      .from('cbt_exams')
       .update({ is_published: !exam.is_published })
       .eq('id', exam.id);
     if (err) {
@@ -316,16 +364,16 @@ export default function PostUtmeManagement() {
   };
 
   const duplicateExam = async (exam: any) => {
-    // Questions are not copied — a duplicate is a new empty paper, matching the
-    // "duplicate" semantics used elsewhere in this codebase.
+    // Questions are not copied — a duplicate is a new empty paper.
     const { id: _id, created_at: _c, updated_at: _u, ...rest } = exam;
     const { data, error: err } = await supabase
-      .from('post_utme_exams')
+      .from('cbt_exams')
       .insert([
         {
           ...rest,
           title: `${exam.title} (Copy)`,
           is_published: false,
+          total_questions: 0,
           created_by: profile?.id,
         },
       ])
@@ -340,16 +388,10 @@ export default function PostUtmeManagement() {
   };
 
   const deleteExam = async (exam: any) => {
-    // post_utme_questions.exam_id is ON DELETE CASCADE, so deleting a paper would
-    // take its whole question bank with it. Require it to be empty first.
-    if (questions.length > 0 && exam.id === selectedExamId) {
-      setError(
-        `"${exam.title}" still holds ${questions.length} question(s). Remove them before deleting the paper.`,
-      );
-      return;
-    }
+    // cbt_questions.exam_id is ON DELETE CASCADE, so deleting a paper would take
+    // its whole question bank with it. Require it to be empty first.
     const { count } = await supabase
-      .from('post_utme_questions')
+      .from('cbt_questions')
       .select('id', { count: 'exact', head: true })
       .eq('exam_id', exam.id);
     if ((count || 0) > 0) {
@@ -358,7 +400,7 @@ export default function PostUtmeManagement() {
     }
     if (!window.confirm(`Delete the paper "${exam.title}"? This cannot be undone.`)) return;
 
-    const { error: err } = await supabase.from('post_utme_exams').delete().eq('id', exam.id);
+    const { error: err } = await supabase.from('cbt_exams').delete().eq('id', exam.id);
     if (err) {
       setError(err.message);
       return;
@@ -367,13 +409,13 @@ export default function PostUtmeManagement() {
     fetchExams();
   };
 
+  // ---------------------------------------------------------------------------
+  // Question actions
+  // ---------------------------------------------------------------------------
+
   const openQuestionForm = (q: any = null) => {
     setEditingQuestionId(q?.id ?? null);
-    setCurrentQuestion(
-      q
-        ? { ...q }
-        : { correct_option: 'A', difficulty: 'medium', marks: 1 },
-    );
+    setCurrentQuestion(q ? { ...q } : { correct_option: 'A', difficulty: 'medium', marks: 1 });
     setIsQuestionModalOpen(true);
   };
 
@@ -385,7 +427,7 @@ export default function PostUtmeManagement() {
     try {
       const payload = {
         exam_id: selectedExamId,
-        course_code: currentQuestion.course_code || activeExam?.course_code || activeExam?.subject || null,
+        course_code: activeExam?.course_code || null,
         question_text: currentQuestion.question_text,
         option_a: currentQuestion.option_a,
         option_b: currentQuestion.option_b,
@@ -400,20 +442,18 @@ export default function PostUtmeManagement() {
 
       if (editingQuestionId) {
         const { error: err } = await supabase
-          .from('post_utme_questions')
+          .from('cbt_questions')
           .update(payload)
           .eq('id', editingQuestionId);
         if (err) throw err;
       } else {
-        // Duplicate protection: unlike papers, a repeated question in the same
-        // paper is never intentional, so it is refused with a pointer to the
-        // existing row instead of being inserted twice.
+        // Duplicate protection, matching the importer's rule.
         const key = normaliseQuestionText(payload.question_text);
         const clash = questions.find((q) => normaliseQuestionText(q.question_text) === key);
         if (key && clash) {
           throw new Error('This question already exists in this paper. Edit the existing one instead.');
         }
-        const { error: err } = await supabase.from('post_utme_questions').insert([payload]);
+        const { error: err } = await supabase.from('cbt_questions').insert([payload]);
         if (err) throw err;
       }
 
@@ -430,9 +470,9 @@ export default function PostUtmeManagement() {
 
   const duplicateQuestion = async (q: any) => {
     const { id: _id, created_at: _c, ...rest } = q;
-    const { error: err } = await supabase.from('post_utme_questions').insert([
-      { ...rest, question_text: `${q.question_text} (Copy)` },
-    ]);
+    const { error: err } = await supabase
+      .from('cbt_questions')
+      .insert([{ ...rest, question_text: `${q.question_text} (Copy)` }]);
     if (err) {
       setError(err.message);
       return;
@@ -442,15 +482,13 @@ export default function PostUtmeManagement() {
 
   const deleteQuestion = async (q: any) => {
     if (!window.confirm('Delete this question? This cannot be undone.')) return;
-    const { error: err } = await supabase.from('post_utme_questions').delete().eq('id', q.id);
+    const { error: err } = await supabase.from('cbt_questions').delete().eq('id', q.id);
     if (err) {
       setError(err.message);
       return;
     }
     fetchQuestions(selectedExamId);
   };
-
-  // --- Bulk selection --------------------------------------------------------
 
   const toggleQuestionSelected = (id: string) => {
     setSelectedQuestionIds((prev) => {
@@ -465,9 +503,7 @@ export default function PostUtmeManagement() {
     questions.length > 0 && selectedQuestionIds.size === questions.length;
 
   const toggleSelectAllQuestions = () => {
-    setSelectedQuestionIds(
-      allQuestionsSelected ? new Set() : new Set(questions.map((q) => q.id)),
-    );
+    setSelectedQuestionIds(allQuestionsSelected ? new Set() : new Set(questions.map((q) => q.id)));
   };
 
   const deleteSelectedQuestions = async () => {
@@ -475,7 +511,7 @@ export default function PostUtmeManagement() {
     if (ids.length === 0) return;
     if (!window.confirm(`Delete ${ids.length} selected question(s)? This cannot be undone.`)) return;
 
-    const { error: err } = await supabase.from('post_utme_questions').delete().in('id', ids);
+    const { error: err } = await supabase.from('cbt_questions').delete().in('id', ids);
     if (err) {
       setError(err.message);
       return;
@@ -485,7 +521,7 @@ export default function PostUtmeManagement() {
   };
 
   // ---------------------------------------------------------------------------
-  // Topic actions (course_modules)
+  // Topic actions
   // ---------------------------------------------------------------------------
 
   const openTopicForm = (topic: any = null) => {
@@ -496,7 +532,7 @@ export default function PostUtmeManagement() {
 
   const handleSaveTopic = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedSubject) return;
+    if (!selectedCourse) return;
     setBusy(true);
     setError(null);
     try {
@@ -510,18 +546,14 @@ export default function PostUtmeManagement() {
           .eq('id', editingTopicId);
         if (err) throw err;
       } else {
-        const clash = subjectTopics.find(
-          (t) => (t.title || '').toLowerCase() === name.toLowerCase(),
-        );
-        if (clash) throw new Error(`"${name}" already exists in this subject.`);
+        const clash = courseTopics.find((t) => (t.title || '').toLowerCase() === name.toLowerCase());
+        if (clash) throw new Error(`"${name}" already exists in this course.`);
 
         const { error: err } = await supabase.from('course_modules').insert([
           {
-            course_id: selectedSubject.id,
+            course_id: selectedCourse.id,
             title: name,
-            order_index: subjectTopics.length,
-            // Set explicitly: the column default is true, and an archived topic
-            // is hidden from the pickers.
+            order_index: courseTopics.length,
             is_archived: false,
           },
         ]);
@@ -531,7 +563,7 @@ export default function PostUtmeManagement() {
       setIsTopicModalOpen(false);
       setEditingTopicId(null);
       setTopicName('');
-      await fetchSubjects();
+      await fetchCourseContent();
     } catch (err: any) {
       setError(err?.message || 'Could not save this topic.');
     } finally {
@@ -549,19 +581,17 @@ export default function PostUtmeManagement() {
       return;
     }
     if (isArchived && selectedTopicTitle === topic.title) setSelectedTopicTitle('');
-    fetchSubjects();
+    fetchCourseContent();
   };
 
   const deleteTopic = async (topic: any) => {
-    // Materials reference their topic by text, not by id, so deleting a topic
-    // would orphan every lesson filed under it. Counted from the database rather
-    // than from `materials` in state: that list is already scoped to the current
-    // user, so for a lecturer it would under-count another lecturer's materials
-    // and let an in-use topic be deleted.
+    // Materials reference their topic by text, not by id. Counted from the
+    // database rather than from `materials` in state, which is already scoped to
+    // the current user and would under-count another lecturer's materials.
     const { count } = await supabase
       .from('materials')
       .select('id', { count: 'exact', head: true })
-      .eq('course_code', selectedSubject?.course_code)
+      .eq('course_code', selectedCourse?.course_code)
       .eq('topic', topic.title);
     if ((count || 0) > 0) {
       setError(`"${topic.title}" still contains ${count} material(s). Remove them before deleting the topic.`);
@@ -575,7 +605,7 @@ export default function PostUtmeManagement() {
       return;
     }
     if (selectedTopicTitle === topic.title) setSelectedTopicTitle('');
-    fetchSubjects();
+    fetchCourseContent();
   };
 
   const reorderTopic = async (list: any[], index: number, direction: 'up' | 'down') => {
@@ -583,8 +613,6 @@ export default function PostUtmeManagement() {
     if (targetIndex < 0 || targetIndex >= list.length) return;
     const a = list[index];
     const b = list[targetIndex];
-    // True swap, matching admin/CourseManagement.tsx: hand each row its
-    // neighbour's order_index so they exchange places instead of colliding.
     const results = await Promise.all([
       supabase.from('course_modules').update({ order_index: b.order_index ?? targetIndex }).eq('id', a.id),
       supabase.from('course_modules').update({ order_index: a.order_index ?? index }).eq('id', b.id),
@@ -594,11 +622,11 @@ export default function PostUtmeManagement() {
       setError(failed.error.message);
       return;
     }
-    fetchSubjects();
+    fetchCourseContent();
   };
 
   // ---------------------------------------------------------------------------
-  // Material actions (materials)
+  // Material actions
   // ---------------------------------------------------------------------------
 
   const toggleMaterialPublish = async (m: any) => {
@@ -610,7 +638,7 @@ export default function PostUtmeManagement() {
       setError(err.message);
       return;
     }
-    fetchSubjects();
+    fetchCourseContent();
   };
 
   const deleteMaterial = async (m: any) => {
@@ -620,7 +648,7 @@ export default function PostUtmeManagement() {
       setError(err.message);
       return;
     }
-    fetchSubjects();
+    fetchCourseContent();
   };
 
   const reorderMaterial = async (list: any[], index: number, direction: 'up' | 'down') => {
@@ -639,7 +667,7 @@ export default function PostUtmeManagement() {
       setError(failed.error.message);
       return;
     }
-    fetchSubjects();
+    fetchCourseContent();
   };
 
   // ---------------------------------------------------------------------------
@@ -659,24 +687,23 @@ export default function PostUtmeManagement() {
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 space-y-8">
-      {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-[#0f172a] border border-slate-800 p-8 rounded-3xl">
         <div>
           <span className="text-xs font-bold uppercase tracking-wider text-amber-400 bg-amber-500/10 px-3 py-1 rounded-full">
             {isLecturer ? 'Lecturer Portal' : 'Admin Portal'}
           </span>
           <h1 className="text-3xl font-display font-bold text-white mt-2 flex items-center gap-3">
-            <Building2 className="text-blue-400" size={28} />
-            Post-UTME Manager
+            <PenTool className="text-blue-400" size={28} />
+            Undergraduate Manager
           </h1>
           <p className="text-slate-400 mt-1">
-            Papers, question banks, topics and learning materials for the Post-UTME programme.
+            Papers, question banks, topics and learning materials for {PORTAL} courses.
           </p>
         </div>
         <button
           onClick={() => {
             setCurrentExam({
-              university: POST_UTME_UNIVERSITY_CODE,
+              course_code: selectedCourse?.course_code || '',
               duration_minutes: 60,
               is_published: false,
             });
@@ -700,7 +727,6 @@ export default function PostUtmeManagement() {
         </div>
       )}
 
-      {/* Tabs */}
       <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-4">
         {tabs.map((tab) => (
           <button
@@ -720,16 +746,15 @@ export default function PostUtmeManagement() {
       {loading ? (
         <div className="flex items-center justify-center py-24 text-slate-400 gap-3">
           <Loader2 className="animate-spin" size={22} />
-          <span>Loading Post-UTME content…</span>
+          <span>Loading Undergraduate content…</span>
         </div>
       ) : (
         <>
-          {/* ------------------------------------------------------------------ */}
-          {/* Question bank                                                      */}
-          {/* ------------------------------------------------------------------ */}
+          {/* ---------------------------------------------------------------- */}
+          {/* Question bank                                                     */}
+          {/* ---------------------------------------------------------------- */}
           {activeTab === 'questions' && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Papers */}
               <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-5 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="font-bold text-white">Papers</h3>
@@ -744,7 +769,7 @@ export default function PostUtmeManagement() {
                     type="text"
                     value={examSearch}
                     onChange={(e) => setExamSearch(e.target.value)}
-                    placeholder="Search title, subject or university…"
+                    placeholder="Search title, code or subject…"
                     className={`${inputCls} pl-9 text-sm`}
                   />
                 </div>
@@ -755,37 +780,36 @@ export default function PostUtmeManagement() {
                       key={exam.id}
                       onClick={() => setSelectedExamId(exam.id)}
                       className={`p-4 rounded-2xl border cursor-pointer transition-all ${
-                        selectedExamId === exam.id
+                        activeExam?.id === exam.id
                           ? 'bg-blue-500/10 border-blue-500/40'
                           : 'bg-slate-950/40 border-slate-800 hover:border-slate-700'
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <span className="text-xs font-bold px-2 py-0.5 rounded bg-slate-800 text-amber-300">
-                          {POST_UTME_UNIVERSITY_CODE}
+                          {exam.course_code || '—'}
                         </span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            togglePublishExam(exam);
-                          }}
-                          title={exam.is_published ? 'Unpublish' : 'Publish'}
-                          className={`text-xs px-2 py-0.5 rounded-full font-bold flex items-center gap-1 ${
+                        <span
+                          className={`text-xs px-2 py-0.5 rounded-full font-bold ${
                             exam.is_published
                               ? 'bg-emerald-500/20 text-emerald-300'
                               : 'bg-slate-800 text-slate-400'
                           }`}
                         >
-                          {exam.is_published ? <Eye size={12} /> : <EyeOff size={12} />}
-                          {exam.is_published ? 'Live' : 'Draft'}
-                        </button>
+                          {exam.is_published ? 'Published' : 'Unpublished'}
+                        </span>
                       </div>
                       <h4 className="font-semibold text-white text-sm mt-2">{exam.title}</h4>
+                      {/* No question count here on purpose: `cbt_exams.
+                          total_questions` is stamped at import time and never
+                          maintained, so it reads 0 for any paper built by hand.
+                          The open paper's real count is shown in the header
+                          instead. Post-UTME's card omits it for the same reason. */}
                       <p className="text-xs text-slate-500 mt-1">
-                        {exam.subject} · {exam.year || 'No session'} · {exam.duration_minutes} min
+                        {exam.duration_minutes || 60} minutes
                       </p>
                       <p className="text-[11px] text-slate-600 mt-1">
-                        Imported {formatDateTime(exam.created_at)}
+                        Created {formatDateTime(exam.created_at)}
                       </p>
                       <div className="flex items-center gap-1 mt-3">
                         <button
@@ -828,7 +852,6 @@ export default function PostUtmeManagement() {
                 </div>
               </div>
 
-              {/* Questions */}
               <div className="lg:col-span-2 bg-[#0f172a] border border-slate-800 rounded-3xl p-6 space-y-5">
                 {activeExam ? (
                   <>
@@ -836,15 +859,15 @@ export default function PostUtmeManagement() {
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-bold px-2.5 py-1 rounded bg-slate-800 text-amber-300">
-                            {POST_UTME_UNIVERSITY_CODE}
+                            {activeExam.course_code || '—'}
                           </span>
                           <span className="text-xs text-slate-500">
-                            {activeExam.year || 'All sessions'} · {activeExam.duration_minutes} minutes
+                            {activeExam.duration_minutes || 60} minutes
                           </span>
                         </div>
                         <h2 className="text-xl font-bold text-white mt-2">{activeExam.title}</h2>
                         <p className="text-xs text-slate-500 mt-1">
-                          {questions.length} question{questions.length === 1 ? '' : 's'} · imported{' '}
+                          {questions.length} question{questions.length === 1 ? '' : 's'} · created{' '}
                           {formatDateTime(activeExam.created_at)}
                           {attemptStats && attemptStats.count > 0 && (
                             <>
@@ -855,15 +878,16 @@ export default function PostUtmeManagement() {
                             </>
                           )}
                         </p>
+                        {/* cbt_questions has no status column, so the paper's
+                            is_published flag is the only gate — and it is the one
+                            /api/cbt/start enforces for students. */}
                         <p className="text-[11px] text-slate-500 mt-1">
                           {activeExam.is_published
-                            ? 'Published — students can take this paper in CBT.'
+                            ? 'Published — students can take this paper in Undergraduate CBT.'
                             : 'Unpublished — hidden from students, still editable here.'}
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
-                        {/* Publish is per paper: a paper is the unit students
-                            take, so this is what actually gates the CBT. */}
                         <button
                           onClick={() => togglePublishExam(activeExam)}
                           className={`px-4 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-colors ${
@@ -1010,7 +1034,7 @@ export default function PostUtmeManagement() {
                   </>
                 ) : (
                   <div className="text-center py-24 text-slate-500">
-                    <Building2 className="w-12 h-12 mx-auto mb-3 opacity-40" />
+                    <FileText className="w-12 h-12 mx-auto mb-3 opacity-40" />
                     <p>Select a paper, or create a new one.</p>
                   </div>
                 )}
@@ -1018,55 +1042,62 @@ export default function PostUtmeManagement() {
             </div>
           )}
 
-          {/* ------------------------------------------------------------------ */}
-          {/* PDF importer                                                       */}
-          {/* ------------------------------------------------------------------ */}
+          {/* ---------------------------------------------------------------- */}
+          {/* PDF importer                                                      */}
+          {/* ---------------------------------------------------------------- */}
           {activeTab === 'importer' && (
             <div className="space-y-4">
               <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-4 flex items-start gap-3">
                 <Link2 size={18} className="text-blue-400 mt-0.5 shrink-0" />
                 <div className="text-sm text-slate-300 space-y-1">
                   <p>
-                    This importer writes to the <strong className="text-white">Post-UTME</strong>{' '}
-                    question bank only. Choose a Post-UTME course and one of its topics below —
-                    those are the existing Post-UTME courses and topics, not a separate list.
+                    This importer writes to the <strong className="text-white">Undergraduate</strong>{' '}
+                    CBT bank only. Choose the semester and the Undergraduate course below — those
+                    are the same course codes students pick from in Undergraduate CBT.
                   </p>
                   <p className="text-slate-400">
-                    Extracted questions are saved to the bank as soon as extraction finishes, so a
-                    refresh cannot lose them. Re-importing the same PDF skips what is already
-                    there. Questions with no answer key are held back rather than saved with a
+                    Questions are filed under that course's paper, so they appear in the matching
+                    Undergraduate Question Bank. Re-importing the same PDF skips what is already
+                    there, and questions with no answer key are held back rather than saved with a
                     guessed answer.
                   </p>
                 </div>
               </div>
-              <AdminPdfUploader destType="Post-UTME" />
+              <AdminPdfUploader destType="Undergraduate" />
             </div>
           )}
 
-          {/* ------------------------------------------------------------------ */}
-          {/* Topics                                                             */}
-          {/* ------------------------------------------------------------------ */}
+          {/* ---------------------------------------------------------------- */}
+          {/* Topics                                                            */}
+          {/* ---------------------------------------------------------------- */}
           {activeTab === 'topics' && (
             <div className="space-y-6">
-              <SubjectPicker
-                subjects={subjects}
-                value={selectedSubjectId}
-                onChange={(id) => {
-                  setSelectedSubjectId(id);
+              <SemesterCoursePicker
+                selectedSemester={selectedSemester}
+                onSemesterChange={(s) => {
+                  setSelectedSemester(s);
+                  setSelectedCourseId('');
                   setSelectedTopicTitle('');
                 }}
-                labelCls={labelCls}
+                courses={semesterCourses}
+                selectedCourseId={selectedCourse?.id || ''}
+                onCourseChange={(id) => {
+                  setSelectedCourseId(id);
+                  setSelectedTopicTitle('');
+                }}
                 inputCls={inputCls}
+                labelCls={labelCls}
               />
 
-              {selectedSubject && (
+              {selectedCourse && (
                 <>
                   <div className="flex items-center justify-between">
                     <p className="text-sm text-slate-400">
                       Topics for{' '}
                       <strong className="text-white">
-                        {selectedSubject.course_code} — {selectedSubject.title}
-                      </strong>
+                        {selectedCourse.course_code} — {selectedCourse.title}
+                      </strong>{' '}
+                      <span className="text-slate-500">({selectedSemester})</span>
                     </p>
                     <button
                       onClick={() => openTopicForm()}
@@ -1076,44 +1107,42 @@ export default function PostUtmeManagement() {
                     </button>
                   </div>
 
-                  {subjectTopics.length === 0 ? (
+                  {courseTopics.length === 0 ? (
                     <div className="text-center py-16 bg-[#0f172a] border border-slate-800 border-dashed rounded-2xl">
                       <Layers size={40} className="mx-auto text-slate-700 mb-3" />
-                      <p className="text-slate-400 font-medium">No topics in this subject yet.</p>
+                      <p className="text-slate-400 font-medium">No topics in this course yet.</p>
                       <p className="text-xs text-slate-500 mt-1">
-                        Topics group questions and materials — e.g. “Algebra”, “Kinematics”.
+                        Topics group questions and materials — e.g. “Kinematics”, “Algebra”.
                       </p>
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      {subjectTopics.map((t, i) => (
+                      {courseTopics.map((t, i) => (
                         <div
                           key={t.id}
                           className={`bg-[#0f172a] border border-slate-800 rounded-2xl p-5 space-y-3 ${
                             t.is_archived ? 'opacity-60' : ''
                           }`}
                         >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <h4 className="font-bold text-white truncate">{t.title}</h4>
-                              <p className="text-xs text-slate-500 mt-1">
-                                {t.is_archived ? 'Archived' : `${i + 1} of ${subjectTopics.length}`}
-                              </p>
-                            </div>
+                          <div className="min-w-0">
+                            <h4 className="font-bold text-white truncate">{t.title}</h4>
+                            <p className="text-xs text-slate-500 mt-1">
+                              {t.is_archived ? 'Archived' : `${i + 1} of ${courseTopics.length}`}
+                            </p>
                           </div>
                           <div className="flex items-center gap-1 flex-wrap">
                             {!t.is_archived && i > 0 && (
                               <button
-                                onClick={() => reorderTopic(subjectTopics, i, 'up')}
+                                onClick={() => reorderTopic(courseTopics, i, 'up')}
                                 title="Move up"
                                 className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700"
                               >
                                 <ArrowUp size={16} />
                               </button>
                             )}
-                            {!t.is_archived && i < subjectTopics.length - 1 && (
+                            {!t.is_archived && i < courseTopics.length - 1 && (
                               <button
-                                onClick={() => reorderTopic(subjectTopics, i, 'down')}
+                                onClick={() => reorderTopic(courseTopics, i, 'down')}
                                 title="Move down"
                                 className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700"
                               >
@@ -1161,23 +1190,29 @@ export default function PostUtmeManagement() {
             </div>
           )}
 
-          {/* ------------------------------------------------------------------ */}
-          {/* Materials                                                          */}
-          {/* ------------------------------------------------------------------ */}
+          {/* ---------------------------------------------------------------- */}
+          {/* Materials                                                         */}
+          {/* ---------------------------------------------------------------- */}
           {activeTab === 'materials' && (
             <div className="space-y-6">
-              <SubjectPicker
-                subjects={subjects}
-                value={selectedSubjectId}
-                onChange={(id) => {
-                  setSelectedSubjectId(id);
+              <SemesterCoursePicker
+                selectedSemester={selectedSemester}
+                onSemesterChange={(s) => {
+                  setSelectedSemester(s);
+                  setSelectedCourseId('');
                   setSelectedTopicTitle('');
                 }}
-                labelCls={labelCls}
+                courses={semesterCourses}
+                selectedCourseId={selectedCourse?.id || ''}
+                onCourseChange={(id) => {
+                  setSelectedCourseId(id);
+                  setSelectedTopicTitle('');
+                }}
                 inputCls={inputCls}
+                labelCls={labelCls}
               />
 
-              {selectedSubject && (
+              {selectedCourse && (
                 <>
                   <div>
                     <label className={labelCls}>Topic</label>
@@ -1187,18 +1222,16 @@ export default function PostUtmeManagement() {
                       className={`${inputCls} mt-1`}
                     >
                       <option value="">Select a topic…</option>
-                      {subjectTopics
-                        .filter((t) => !t.is_archived)
-                        .map((t) => (
-                          <option key={t.id} value={t.title}>
-                            {t.title}
-                          </option>
-                        ))}
+                      {activeTopics.map((t) => (
+                        <option key={t.id} value={t.title}>
+                          {t.title}
+                        </option>
+                      ))}
                     </select>
-                    {subjectTopics.filter((t) => !t.is_archived).length === 0 && (
+                    {activeTopics.length === 0 && (
                       <p className="text-xs text-amber-400 mt-2">
-                        This subject has no active topics. Create one in the Topics tab first —
-                        materials are always filed under a subject + topic.
+                        This course has no active topics. Create one in the Topics tab first —
+                        materials are always filed under a course + topic.
                       </p>
                     )}
                   </div>
@@ -1209,20 +1242,19 @@ export default function PostUtmeManagement() {
                         <p className="text-sm text-slate-400">
                           Materials in{' '}
                           <strong className="text-white">
-                            {selectedSubject.course_code} → {selectedTopicTitle}
-                          </strong>
+                            {selectedCourse.course_code} → {selectedTopicTitle}
+                          </strong>{' '}
+                          <span className="text-slate-500">({selectedSemester})</span>
                         </p>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => {
-                              setEditingLesson(null);
-                              setShowLessonEditor(true);
-                            }}
-                            className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl flex items-center gap-2 text-sm"
-                          >
-                            <BookOpen size={16} /> New Lesson
-                          </button>
-                        </div>
+                        <button
+                          onClick={() => {
+                            setEditingLesson(null);
+                            setShowLessonEditor(true);
+                          }}
+                          className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl flex items-center gap-2 text-sm"
+                        >
+                          <BookOpen size={16} /> New Lesson
+                        </button>
                       </div>
 
                       {topicMaterials.length === 0 ? (
@@ -1230,7 +1262,7 @@ export default function PostUtmeManagement() {
                           <BookOpen size={40} className="mx-auto text-slate-700 mb-3" />
                           <p className="text-slate-400 font-medium">No materials in this topic yet.</p>
                           <p className="text-xs text-slate-500 mt-1">
-                            A lesson carries readable content; an uploaded file attaches a PDF or slide deck.
+                            A lesson carries the readable content students see under this course.
                           </p>
                         </div>
                       ) : (
@@ -1244,7 +1276,7 @@ export default function PostUtmeManagement() {
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <h4 className="font-bold text-white truncate">{m.title}</h4>
                                   <span className="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded font-medium">
-                                    {formatFileType(m.file_type)}
+                                    {m.file_type === 'lesson' ? 'Lesson' : (m.file_type || 'File').toUpperCase()}
                                   </span>
                                   <span
                                     className={`text-xs px-2 py-0.5 rounded-full font-bold ${
@@ -1257,10 +1289,8 @@ export default function PostUtmeManagement() {
                                   </span>
                                 </div>
                                 <p className="text-xs text-slate-500 mt-1">
-                                  {m.file_type === 'lesson'
-                                    ? 'Readable lesson content'
-                                    : `${m.file_size || 'Unknown size'}`}
-                                  {m.lecturer_name ? ` · ${m.lecturer_name}` : ''}
+                                  {m.semester ? `${m.semester} · ` : ''}
+                                  {m.lecturer_name || 'Admin'}
                                 </p>
                               </div>
 
@@ -1292,12 +1322,10 @@ export default function PostUtmeManagement() {
                                 </button>
                                 <button
                                   onClick={() => {
-                                    // Lessons are the only authoring path here
-                                    // now that file upload is withdrawn.
                                     setEditingLesson(m);
                                     setShowLessonEditor(true);
                                   }}
-                                  title="Edit"
+                                  title="Edit lesson"
                                   className="p-1.5 rounded-lg text-slate-400 hover:text-amber-400 hover:bg-amber-500/10"
                                 >
                                   <Edit2 size={16} />
@@ -1323,13 +1351,11 @@ export default function PostUtmeManagement() {
         </>
       )}
 
-      {/* -------------------------------------------------------------------- */}
-      {/* Paper modal                                                           */}
-      {/* -------------------------------------------------------------------- */}
+      {/* Paper modal */}
       {isExamModalOpen && (
         <Modal onClose={() => setIsExamModalOpen(false)}>
           <h3 className="text-xl font-bold text-white">
-            {currentExam.id ? 'Edit Paper' : 'New Post-UTME Paper'}
+            {currentExam.id ? 'Edit Paper' : 'New Undergraduate Paper'}
           </h3>
           <form onSubmit={handleSaveExam} className="space-y-4 mt-6">
             <div>
@@ -1339,78 +1365,41 @@ export default function PostUtmeManagement() {
                 type="text"
                 value={currentExam.title || ''}
                 onChange={(e) => setCurrentExam({ ...currentExam, title: e.target.value })}
-                placeholder="e.g. Mathematics Post-UTME 2024"
+                placeholder="e.g. CHM 101 First Semester Practice"
                 className={`${inputCls} mt-1`}
               />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className={labelCls}>University</label>
-                {/* Fixed: Post-UTME serves only the University of Ilorin. Shown
-                    rather than offered as a choice, so no other university can
-                    be written onto a paper. */}
-                <div
-                  className={`${inputCls} mt-1 flex items-center gap-2 opacity-80`}
-                  title="Post-UTME is fixed to the University of Ilorin"
-                >
-                  <Building2 size={15} className="text-amber-400 shrink-0" />
-                  <span className="truncate">
-                    {POST_UTME_UNIVERSITY_NAME} ({POST_UTME_UNIVERSITY_CODE})
-                  </span>
-                </div>
+                <label className={labelCls}>Semester</label>
+                <input type="text" disabled value={selectedSemester} className={`${inputCls} mt-1 opacity-60`} />
               </div>
               <div>
-                <label className={labelCls}>Subject</label>
+                <label className={labelCls}>Course</label>
                 <select
                   required
-                  value={currentExam.subject || ''}
-                  onChange={(e) => {
-                    const subject = e.target.value;
-                    // Keep course_code in step with the subject so imported
-                    // questions land under the right Post-UTME subject.
-                    const match = subjects.find(
-                      (s) => s.title === subject || s.course_code === subject,
-                    );
-                    setCurrentExam({
-                      ...currentExam,
-                      subject,
-                      course_code: match?.course_code || currentExam.course_code || null,
-                    });
-                  }}
+                  value={currentExam.course_code || ''}
+                  onChange={(e) => setCurrentExam({ ...currentExam, course_code: e.target.value })}
                   className={`${inputCls} mt-1`}
                 >
-                  <option value="">Select subject…</option>
-                  {subjects.map((s) => (
-                    <option key={s.id} value={s.title}>
-                      {s.title}
+                  <option value="">Select course…</option>
+                  {semesterCourses.map((c) => (
+                    <option key={c.id} value={c.course_code}>
+                      {c.course_code} — {c.title}
                     </option>
                   ))}
                 </select>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className={labelCls}>Year / Session</label>
-                <input
-                  type="text"
-                  value={currentExam.year || ''}
-                  onChange={(e) => setCurrentExam({ ...currentExam, year: e.target.value })}
-                  placeholder="2023/2024"
-                  className={`${inputCls} mt-1`}
-                />
-              </div>
-              <div>
-                <label className={labelCls}>Duration (minutes)</label>
-                <input
-                  type="number"
-                  min={1}
-                  value={currentExam.duration_minutes || 60}
-                  onChange={(e) =>
-                    setCurrentExam({ ...currentExam, duration_minutes: e.target.value })
-                  }
-                  className={`${inputCls} mt-1`}
-                />
-              </div>
+            <div>
+              <label className={labelCls}>Duration (minutes)</label>
+              <input
+                type="number"
+                min={1}
+                value={currentExam.duration_minutes || 60}
+                onChange={(e) => setCurrentExam({ ...currentExam, duration_minutes: e.target.value })}
+                className={`${inputCls} mt-1`}
+              />
             </div>
             <label className="flex items-center gap-2 pt-2 cursor-pointer">
               <input
@@ -1444,9 +1433,7 @@ export default function PostUtmeManagement() {
         </Modal>
       )}
 
-      {/* -------------------------------------------------------------------- */}
-      {/* Question modal                                                        */}
-      {/* -------------------------------------------------------------------- */}
+      {/* Question modal */}
       {isQuestionModalOpen && (
         <Modal onClose={() => setIsQuestionModalOpen(false)} wide>
           <h3 className="text-xl font-bold text-white">
@@ -1459,9 +1446,7 @@ export default function PostUtmeManagement() {
                 required
                 rows={3}
                 value={currentQuestion.question_text || ''}
-                onChange={(e) =>
-                  setCurrentQuestion({ ...currentQuestion, question_text: e.target.value })
-                }
+                onChange={(e) => setCurrentQuestion({ ...currentQuestion, question_text: e.target.value })}
                 placeholder="Enter the question…"
                 className={`${inputCls} mt-1`}
               />
@@ -1482,14 +1467,12 @@ export default function PostUtmeManagement() {
                 </div>
               ))}
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <div>
-                <label className={labelCls}>Correct Option</label>
+                <label className={labelCls}>Correct</label>
                 <select
                   value={currentQuestion.correct_option || 'A'}
-                  onChange={(e) =>
-                    setCurrentQuestion({ ...currentQuestion, correct_option: e.target.value })
-                  }
+                  onChange={(e) => setCurrentQuestion({ ...currentQuestion, correct_option: e.target.value })}
                   className={`${inputCls} mt-1`}
                 >
                   {['A', 'B', 'C', 'D'].map((o) => (
@@ -1503,9 +1486,7 @@ export default function PostUtmeManagement() {
                 <label className={labelCls}>Difficulty</label>
                 <select
                   value={currentQuestion.difficulty || 'medium'}
-                  onChange={(e) =>
-                    setCurrentQuestion({ ...currentQuestion, difficulty: e.target.value })
-                  }
+                  onChange={(e) => setCurrentQuestion({ ...currentQuestion, difficulty: e.target.value })}
                   className={`${inputCls} mt-1`}
                 >
                   {['easy', 'medium', 'hard'].map((d) => (
@@ -1515,45 +1496,39 @@ export default function PostUtmeManagement() {
                   ))}
                 </select>
               </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className={labelCls}>Marks</label>
                 <input
                   type="number"
                   min={1}
                   value={currentQuestion.marks || 1}
-                  onChange={(e) =>
-                    setCurrentQuestion({ ...currentQuestion, marks: e.target.value })
-                  }
+                  onChange={(e) => setCurrentQuestion({ ...currentQuestion, marks: e.target.value })}
                   className={`${inputCls} mt-1`}
                 />
               </div>
-              <div>
-                <label className={labelCls}>Topic (optional)</label>
-                <input
-                  type="text"
-                  list="post-utme-topic-options"
-                  value={currentQuestion.topic || ''}
-                  onChange={(e) => setCurrentQuestion({ ...currentQuestion, topic: e.target.value })}
-                  placeholder="e.g. Algebra"
-                  className={`${inputCls} mt-1`}
-                />
-                <datalist id="post-utme-topic-options">
-                  {subjectTopics.map((t) => (
-                    <option key={t.id} value={t.title} />
-                  ))}
-                </datalist>
-              </div>
+            </div>
+            <div>
+              <label className={labelCls}>Topic (optional)</label>
+              <input
+                type="text"
+                list="ug-topic-options"
+                value={currentQuestion.topic || ''}
+                onChange={(e) => setCurrentQuestion({ ...currentQuestion, topic: e.target.value })}
+                placeholder="e.g. Kinematics"
+                className={`${inputCls} mt-1`}
+              />
+              <datalist id="ug-topic-options">
+                {courseTopics.map((t) => (
+                  <option key={t.id} value={t.title} />
+                ))}
+              </datalist>
             </div>
             <div>
               <label className={labelCls}>Explanation</label>
               <textarea
                 rows={2}
                 value={currentQuestion.explanation || ''}
-                onChange={(e) =>
-                  setCurrentQuestion({ ...currentQuestion, explanation: e.target.value })
-                }
+                onChange={(e) => setCurrentQuestion({ ...currentQuestion, explanation: e.target.value })}
                 placeholder="Shown to students after submission…"
                 className={`${inputCls} mt-1`}
               />
@@ -1579,9 +1554,7 @@ export default function PostUtmeManagement() {
         </Modal>
       )}
 
-      {/* -------------------------------------------------------------------- */}
-      {/* Topic modal                                                           */}
-      {/* -------------------------------------------------------------------- */}
+      {/* Topic modal */}
       {isTopicModalOpen && (
         <Modal onClose={() => setIsTopicModalOpen(false)}>
           <h3 className="text-xl font-bold text-white">
@@ -1589,15 +1562,11 @@ export default function PostUtmeManagement() {
           </h3>
           <form onSubmit={handleSaveTopic} className="space-y-4 mt-6">
             <div>
-              <label className={labelCls}>Subject</label>
+              <label className={labelCls}>Course</label>
               <input
                 type="text"
                 disabled
-                value={
-                  selectedSubject
-                    ? `${selectedSubject.course_code} — ${selectedSubject.title}`
-                    : ''
-                }
+                value={selectedCourse ? `${selectedCourse.course_code} — ${selectedCourse.title} (${selectedSemester})` : ''}
                 className={`${inputCls} mt-1 opacity-60`}
               />
             </div>
@@ -1635,15 +1604,16 @@ export default function PostUtmeManagement() {
         </Modal>
       )}
 
-      {/* -------------------------------------------------------------------- */}
-      {/* Shared material components (reused as-is)                             */}
-      {/* -------------------------------------------------------------------- */}
-      {showLessonEditor && selectedSubject && selectedTopicTitle && (
+      {/* Shared lesson editor — the same component Post-UTME and Course
+          Management use, so an Undergraduate lesson authored here is identical
+          to one authored anywhere else. `semester` is what keeps it filed under
+          the right Undergraduate semester. */}
+      {showLessonEditor && selectedCourse && selectedTopicTitle && (
         <LessonEditor
-          courseCode={selectedSubject.course_code}
+          courseCode={selectedCourse.course_code}
           topic={selectedTopicTitle}
           portal={PORTAL}
-          semester={selectedSubject.semester || ''}
+          semester={selectedSemester}
           lesson={editingLesson}
           onClose={() => {
             setShowLessonEditor(false);
@@ -1652,46 +1622,9 @@ export default function PostUtmeManagement() {
           onSaved={() => {
             setShowLessonEditor(false);
             setEditingLesson(null);
-            fetchSubjects();
+            fetchCourseContent();
           }}
         />
-      )}
-
-    </div>
-  );
-}
-
-/** Subject (Post-UTME course) selector, shared by the Topics and Materials tabs. */
-function SubjectPicker({
-  subjects,
-  value,
-  onChange,
-  labelCls,
-  inputCls,
-}: {
-  subjects: any[];
-  value: string;
-  onChange: (id: string) => void;
-  labelCls: string;
-  inputCls: string;
-}) {
-  return (
-    <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-5">
-      <label className={labelCls}>Post-UTME Subject</label>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className={`${inputCls} mt-1`}>
-        <option value="">Select a subject…</option>
-        {subjects.map((s) => (
-          <option key={s.id} value={s.id}>
-            {s.course_code} — {s.title}
-          </option>
-        ))}
-      </select>
-      {subjects.length === 0 && (
-        <p className="text-xs text-amber-400 mt-2 flex items-center gap-2">
-          <GraduationCap size={14} />
-          No Post-UTME subjects available. Create them in Course Management under the Post-UTME
-          programme first.
-        </p>
       )}
     </div>
   );

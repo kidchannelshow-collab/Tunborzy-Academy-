@@ -1,7 +1,15 @@
 import { GraduationCap } from 'lucide-react';
 import { motion } from 'motion/react';
+import { useGeneralSettings } from '../lib/platformSettings';
 
 export default function Footer() {
+  const { settings } = useGeneralSettings();
+
+  // Same two-tone brand treatment as the Navbar, driven by the saved name.
+  const nameWords = settings.platform_name.trim().split(/\s+/).filter(Boolean);
+  const nameLead = (nameWords[0] || 'Tunborzy').toUpperCase();
+  const nameTail = nameWords.slice(1).join(' ').toUpperCase();
+
   return (
     <motion.footer 
       initial={{ opacity: 0, y: 50 }}
@@ -20,7 +28,7 @@ export default function Footer() {
                 <GraduationCap className="w-6 h-6 text-amber-500" />
               </div>
               <span className="font-black tracking-tighter text-xl text-white antialiased">
-                TUNBORZY <span className="accent-text">ACADEMY</span>
+                {nameLead} {nameTail && <span className="accent-text">{nameTail}</span>}
               </span>
             </div>
             <p className="text-sm leading-relaxed text-[#ffffff] max-w-xs font-promo font-bold">
@@ -51,8 +59,30 @@ export default function Footer() {
           <div>
             <h4 className="font-display font-bold mb-6 text-[#3763b7]">Contact</h4>
             <ul className="space-y-4 text-sm font-poppins font-medium text-[#ffffff]">
-              <li><span className="text-[#f59e0b]">Email:</span> <a href="#" className="hover:text-white transition-colors">support@tunborzy.edu</a></li>
-              <li><span className="text-[#f59e0b]">Phone:</span> <a href="#" className="hover:text-white transition-colors font-space font-bold">+234 906 989 1293</a></li>
+              {/* Contact details come from System Settings. They used to be
+                  hardcoded here and disagreed with the stored values. */}
+              {settings.support_email && (
+                <li>
+                  <span className="text-[#f59e0b]">Email:</span>{' '}
+                  <a
+                    href={`mailto:${settings.support_email}`}
+                    className="hover:text-white transition-colors break-all"
+                  >
+                    {settings.support_email}
+                  </a>
+                </li>
+              )}
+              {settings.support_phone && (
+                <li>
+                  <span className="text-[#f59e0b]">Phone:</span>{' '}
+                  <a
+                    href={`tel:${settings.support_phone.replace(/\s+/g, '')}`}
+                    className="hover:text-white transition-colors font-space font-bold"
+                  >
+                    {settings.support_phone}
+                  </a>
+                </li>
+              )}
               <li><span className="text-[#f59e0b]">Address:</span> Ilorin, Kwara State</li>
             </ul>
           </div>
@@ -60,7 +90,7 @@ export default function Footer() {
         </div>
 
         <div className="pt-8 grid-border border-x-0 border-b-0 border-t flex flex-col md:flex-row justify-between items-center gap-4 text-[10px] uppercase tracking-widest text-[#ffffff]">
-          <p className="font-poppins font-medium">&copy; <span className="font-space font-bold">{new Date().getFullYear()}</span> Tunborzy Academy. Empowering Minds.</p>
+          <p className="font-poppins font-medium">&copy; <span className="font-space font-bold">{new Date().getFullYear()}</span> {settings.platform_name}. Empowering Minds.</p>
           <div className="flex gap-8 font-poppins font-medium">
             <motion.a whileHover={{ y: -5 }} href="#" className="hover:text-slate-400 transition-colors">Privacy Policy</motion.a>
             <motion.a whileHover={{ y: -5 }} href="#" className="hover:text-slate-400 transition-colors">Terms of Service</motion.a>

@@ -1,9 +1,18 @@
 import { useState } from 'react';
 import { Menu, X, GraduationCap, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useGeneralSettings } from '../lib/platformSettings';
 
 export default function Navbar({ onSignUp, onLogin }: { onSignUp?: () => void, onLogin?: () => void }) {
   const [isOpen, setIsOpen] = useState(false);
+  const { settings } = useGeneralSettings();
+
+  // The saved platform name is a single string ("Tunborzy Academy"). The brand
+  // mark has always been two-tone, so the first word stays white and the
+  // remainder keeps the accent colour — the value is dynamic, the styling is not.
+  const nameWords = settings.platform_name.trim().split(/\s+/).filter(Boolean);
+  const nameLead = (nameWords[0] || 'Tunborzy').toUpperCase();
+  const nameTail = nameWords.slice(1).join(' ').toUpperCase();
 
   const links = ['Home', 'About', 'Contact'];
 
@@ -21,7 +30,7 @@ export default function Navbar({ onSignUp, onLogin }: { onSignUp?: () => void, o
               <GraduationCap className="w-6 h-6 text-amber-500" />
             </div>
             <span className="font-black tracking-tighter text-xl text-white antialiased">
-              TUNBORZY <span className="accent-text">ACADEMY</span>
+              {nameLead} {nameTail && <span className="accent-text">{nameTail}</span>}
             </span>
           </div>
           

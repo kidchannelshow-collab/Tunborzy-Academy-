@@ -27,12 +27,23 @@ export default function Overview() {
     }
   }, [profile?.id, profile?.role]);
 
+  // Real average across completed sittings on this lecturer's own exams.
+  // The panel used to print a hardcoded "78%" with a "+5% from last semester"
+  // that no query ever produced.
+  const [avgPerformance, setAvgPerformance] = useState<{ avg: number; sittings: number }>({
+    avg: 0,
+    sittings: 0,
+  });
+
   const fetchStats = async () => {
     if (!supabase || !profile) return;
     try {
       const [coursesRes, cbtRes, enrollmentsRes] = await Promise.all([
         supabase.from('courses').select('id, is_archived').eq('lecturer_id', profile.id),
-        supabase.from('cbt_exams').select('id', { count: 'exact', head: true }).eq('lecturer_id', profile.id),
+        // lecturer/CBTManagement.tsx writes cbt_exams with `created_by`, not
+        // `lecturer_id` (no such column), so counting by lecturer_id always
+        // reported 0 exams.
+        supabase.from('cbt_exams').select('id', { count: 'exact', head: true }).eq('created_by', profile.id),
         supabase.from('course_enrollments').select('student_id, courses!inner(lecturer_id)').eq('courses.lecturer_id', profile.id)
       ]);
       
@@ -45,6 +56,34 @@ export default function Overview() {
         cbt: cbtRes.count || 0,
         students: uniqueStudentCount
       });
+
+      // Average student performance across this lecturer's exams. Scoped by
+      // `created_by` for the same reason the CBT count above is — cbt_exams has
+      // no lecturer_id column. `score` is already a 0–100 percentage.
+      const { data: ownExams } = await supabase
+        .from('cbt_exams')
+        .select('id')
+        .eq('created_by', profile.id);
+      const examIds = (ownExams || []).map((e: any) => e.id);
+
+      if (examIds.length === 0) {
+        setAvgPerformance({ avg: 0, sittings: 0 });
+      } else {
+        const { data: sittings } = await supabase
+          .from('cbt_attempts')
+          .select('score')
+          .eq('status', 'completed')
+          .not('score', 'is', null)
+          .in('exam_id', examIds);
+
+        const scores = (sittings || [])
+          .map((s: any) => Number(s.score))
+          .filter((n: number) => !Number.isNaN(n));
+        setAvgPerformance({
+          avg: scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0,
+          sittings: scores.length,
+        });
+      }
     } catch (e) {
       console.error(e);
     }
@@ -116,11 +155,24 @@ export default function Overview() {
           </div>
           
           <div className="h-64 flex items-center justify-center border-2 border-dashed border-slate-800 rounded-2xl">
-             <div className="text-center">
-               <div className="text-4xl mb-4 text-emerald-500 font-bold">78%</div>
-               <p className="text-slate-400 text-sm">Average across all your courses</p>
-               <p className="text-xs text-slate-500 mt-2">+5% from last semester</p>
-             </div>
+             {avgPerformance.sittings > 0 ? (
+               <div className="text-center">
+                 <div className="text-4xl mb-4 text-emerald-500 font-bold">{avgPerformance.avg}%</div>
+                 <p className="text-slate-400 text-sm">Average across all your courses</p>
+                 <p className="text-xs text-slate-500 mt-2">
+                   From {avgPerformance.sittings} completed sitting
+                   {avgPerformance.sittings === 1 ? '' : 's'}
+                 </p>
+               </div>
+             ) : (
+               <div className="text-center px-6">
+                 <div className="text-4xl mb-4 text-slate-600 font-bold">—</div>
+                 <p className="text-slate-400 text-sm">No completed sittings yet</p>
+                 <p className="text-xs text-slate-500 mt-2">
+                   Averages appear once students take one of your CBT exams.
+                 </p>
+               </div>
+             )}
           </div>
         </div>
 

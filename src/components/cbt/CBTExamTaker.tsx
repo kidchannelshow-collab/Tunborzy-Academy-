@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeft, ArrowRight, Clock, Flag, Send, AlertTriangle, Maximize, Minimize, Calculator as CalcIcon } from 'lucide-react';
 import { supabase } from '../../supabaseClient';
@@ -20,7 +20,19 @@ export default function CBTExamTaker({ examId, attemptId, onFinish, onCancel, cu
   const [showCalculator, setShowCalculator] = useState(customConfig?.calculator || false);
   const [actualAttemptId, setActualAttemptId] = useState<string>(attemptId);
 
+  // Identifies the exam this component is currently loading. React StrictMode
+  // (src/main.tsx) mounts, unmounts and remounts every component in development,
+  // so this effect runs twice for one start — and each run POSTs /api/cbt/start,
+  // which used to INSERT a fresh cbt_attempts row. One real sitting was therefore
+  // recorded as two CBTs. Guarding on the identity of the exam rather than on a
+  // plain boolean keeps the effect re-runnable when the exam genuinely changes.
+  const loadedKeyRef = useRef<string | null>(null);
+
   useEffect(() => {
+    const loadKey = `${examId ?? ''}|${customConfig?.courseCode ?? ''}|${customConfig?.mode ?? ''}|${customConfig?.topic ?? ''}`;
+    if (loadedKeyRef.current === loadKey) return;
+    loadedKeyRef.current = loadKey;
+
     async function loadExam() {
       let duration = 30 * 60;
       if (customConfig && customConfig.time) {
@@ -227,7 +239,7 @@ export default function CBTExamTaker({ examId, attemptId, onFinish, onCancel, cu
       <div className="flex-1 flex overflow-hidden relative">
         
         {/* Question Area */}
-        <div className="flex-1 flex flex-col h-full overflow-hidden">
+        <div className="flex-1 min-w-0 flex flex-col h-full overflow-hidden">
           <div className="flex-1 overflow-y-auto p-4 md:p-8 lg:p-12 custom-scrollbar">
             <div className="max-w-4xl mx-auto space-y-6 md:space-y-8 pb-20">
               <div className="flex items-center justify-between bg-slate-900/50 p-3 rounded-2xl border border-slate-800">
@@ -247,7 +259,12 @@ export default function CBTExamTaker({ examId, attemptId, onFinish, onCancel, cu
               </div>
 
               <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-6 md:p-8 shadow-xl">
-                <h2 className="text-xl md:text-2xl lg:text-3xl font-body text-white leading-relaxed mb-8">
+                {/* min-w-0 on the flex children below is what actually stops the
+                    horizontal overflow: a flex item defaults to min-width:auto,
+                    so it refuses to shrink below its content and a long unbroken
+                    token (URL, formula) would otherwise push the card wide.
+                    break-words lets such a token wrap instead of escaping. */}
+                <h2 className="text-xl md:text-2xl lg:text-3xl font-body text-white leading-relaxed mb-8 break-words min-w-0">
                   {q.question_text}
                 </h2>
                 {q.image_url && (
@@ -266,7 +283,7 @@ export default function CBTExamTaker({ examId, attemptId, onFinish, onCancel, cu
                         <div className={`w-8 h-8 md:w-10 md:h-10 shrink-0 rounded-full flex items-center justify-center font-action font-bold text-sm border-2 transition-colors ${isSelected ? 'bg-amber-500 border-amber-500 text-slate-950' : 'border-slate-600 text-slate-400'}`}>
                           {opt.letter}
                         </div>
-                        <div className={`flex-1 text-sm md:text-base leading-relaxed ${isSelected ? 'text-white font-medium' : ''}`}>
+                        <div className={`flex-1 min-w-0 break-words text-sm md:text-base leading-relaxed ${isSelected ? 'text-white font-medium' : ''}`}>
                           {opt.text}
                         </div>
                       </button>

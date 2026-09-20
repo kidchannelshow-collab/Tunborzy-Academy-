@@ -40,10 +40,13 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
     try {
       setLoading(true);
       setError(null);
-      // Only fetch levels that have published content
+      // Only fetch levels that have published content. Archived courses are
+      // excluded too, so an archived programme cannot keep a level visible to
+      // students on its own.
       const { data, error } = await supabase
         .from('courses')
-        .select('portal, status');
+        .select('portal, status')
+        .eq('is_archived', false);
       
       if (error) throw error;
       
@@ -82,6 +85,9 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
         .select('*')
         .eq('portal', level)
         .eq('status', 'Published')
+        // Archived courses are hidden from students. Archiving is a deliberate
+        // staff action meaning "retire this", so it must not remain browsable.
+        .eq('is_archived', false)
         .order('title', { ascending: true });
         
       if (error) throw error;
@@ -241,7 +247,7 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
         {/* Header */}
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div>
-            <div className="flex items-center gap-3 text-indigo-400 mb-2">
+            <div className="flex items-center gap-3 text-amber-400 mb-2">
               <GraduationCap size={24} />
               <h2 className="font-bold tracking-widest uppercase text-sm">Undergraduate</h2>
             </div>
@@ -280,7 +286,7 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
         {/* Loading State */}
         {loading ? (
           <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-            <Loader2 className="w-8 h-8 animate-spin text-indigo-500 mb-4" />
+            <Loader2 className="w-8 h-8 animate-spin text-amber-500 mb-4" />
             <p>Loading academic materials...</p>
           </div>
         ) : (
@@ -297,9 +303,9 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
                   <button
                     key={level}
                     onClick={() => fetchCourses(level)}
-                    className="bg-[#0f172a] border border-slate-800 hover:border-indigo-500/50 p-6 rounded-2xl text-left transition-all group hover:bg-[#1e293b]"
+                    className="bg-[#0f172a] border border-slate-800 hover:border-amber-500/50 p-6 rounded-2xl text-left transition-all group hover:bg-[#1e293b]"
                   >
-                    <div className="w-12 h-12 bg-indigo-500/10 text-indigo-400 rounded-xl flex items-center justify-center mb-4 group-hover:bg-indigo-500 group-hover:text-white transition-colors">
+                    <div className="w-12 h-12 bg-amber-500/10 text-amber-400 rounded-xl flex items-center justify-center mb-4 group-hover:bg-amber-500 group-hover:text-white transition-colors">
                       <Layers size={24} />
                     </div>
                     <h3 className="text-xl font-bold text-white mb-2">{level}</h3>
@@ -325,7 +331,7 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
                 className="space-y-6"
               >
                 <div className="flex items-center gap-3 mb-6">
-                  <div className="w-10 h-10 bg-indigo-500/20 text-indigo-400 rounded-xl flex items-center justify-center">
+                  <div className="w-10 h-10 bg-amber-500/20 text-amber-400 rounded-xl flex items-center justify-center">
                     <Layers size={20} />
                   </div>
                   <div>
@@ -339,13 +345,13 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
                     <button
                       key={course.id}
                       onClick={() => fetchTopicsAndMaterials(course)}
-                      className="bg-[#0f172a] border border-slate-800 hover:border-indigo-500/50 p-6 rounded-2xl text-left transition-all group flex flex-col h-full"
+                      className="bg-[#0f172a] border border-slate-800 hover:border-amber-500/50 p-6 rounded-2xl text-left transition-all group flex flex-col h-full"
                     >
                       <div className="flex justify-between items-start mb-4">
-                        <span className="bg-indigo-500/10 text-indigo-400 px-3 py-1 rounded-lg text-sm font-bold uppercase tracking-wider">
+                        <span className="bg-amber-500/10 text-amber-400 px-3 py-1 rounded-lg text-sm font-bold uppercase tracking-wider">
                           {course.course_code}
                         </span>
-                        <ChevronRight className="text-slate-600 group-hover:text-indigo-400 transition-colors" />
+                        <ChevronRight className="text-slate-600 group-hover:text-amber-400 transition-colors" />
                       </div>
                       <h3 className="text-lg font-bold text-white mb-2 line-clamp-2">{course.title}</h3>
                       {course.description && (
@@ -375,9 +381,9 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
                 className="space-y-8"
               >
                 <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-6 md:p-8 relative overflow-hidden">
-                  <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/3"></div>
+                  <div className="absolute top-0 right-0 w-64 h-64 bg-amber-500/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/3"></div>
                   <div className="relative z-10">
-                    <span className="bg-indigo-500/20 text-indigo-400 px-3 py-1 rounded-lg text-sm font-bold uppercase tracking-wider mb-4 inline-block">
+                    <span className="bg-amber-500/20 text-amber-400 px-3 py-1 rounded-lg text-sm font-bold uppercase tracking-wider mb-4 inline-block">
                       {selectedCourse.course_code}
                     </span>
                     <h2 className="text-2xl md:text-3xl font-bold text-white mb-4">{selectedCourse.title}</h2>
@@ -419,12 +425,12 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
                                     onClick={() => openLesson(t.name, t.materials[0])}
                                     className="flex-1 py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-sm"
                                   >
-                                    <BookOpen size={14} className="text-indigo-400" /> Review {t.name}
+                                    <BookOpen size={14} className="text-amber-400" /> Review {t.name}
                                   </button>
                                 )}
                                 <button
                                   onClick={() => setCbtModalTopic(t.name)}
-                                  className="flex-1 py-2 px-3 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-sm"
+                                  className="flex-1 py-2 px-3 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-sm"
                                 >
                                   <Sparkles size={14} /> Practice {t.name}
                                 </button>
@@ -437,7 +443,7 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
 
                   <div className="space-y-4">
                   <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                    <FileText className="text-indigo-400" size={20} />
+                    <FileText className="text-amber-400" size={20} />
                     Course Topics
                   </h3>
                   
@@ -467,7 +473,7 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
                                 )}
                                 <button
                                   onClick={() => setCbtModalTopic(topic.name)}
-                                  className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all shadow-sm flex items-center gap-1.5"
+                                  className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shadow-sm flex items-center gap-1.5"
                                 >
                                   Practice This Topic
                                 </button>
@@ -480,14 +486,14 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
                                   onClick={() => openLesson(topic.name, material)}
                                   className="w-full text-left p-5 hover:bg-slate-800/50 transition-colors flex items-center gap-4 group"
                                 >
-                                  <div className="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center group-hover:scale-110 transition-transform">
+                                  <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center group-hover:scale-110 transition-transform">
                                     <PlayCircle size={20} />
                                   </div>
                                   <div className="flex-1">
                                     <h5 className="font-semibold text-slate-200 group-hover:text-white transition-colors">{material.title || `Lesson ${mIndex + 1}`}</h5>
                                     <p className="text-xs text-slate-500 mt-1">Read lesson material</p>
                                   </div>
-                                  <ChevronRight className="text-slate-600 group-hover:text-indigo-400 transition-colors" />
+                                  <ChevronRight className="text-slate-600 group-hover:text-amber-400 transition-colors" />
                                 </button>
                               ))}
                             </div>
