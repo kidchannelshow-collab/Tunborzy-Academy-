@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ChevronRight, ChevronLeft, Award, Layers, Shuffle, ListTree, Play, AlertCircle } from 'lucide-react';
 import { supabase } from '../../supabaseClient';
+import { usePlatformConfig, type Semester } from '../../lib/platformSettings';
 
 interface CBTUndergraduateDrillingProps {
   onStartDrill: (config: any) => void;
@@ -48,6 +49,7 @@ export const SECOND_SEMESTER_COURSES = [
 ];
 
 export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewAnalytics }: CBTUndergraduateDrillingProps) {
+  const { config } = usePlatformConfig();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   
   const [selectedSemester, setSelectedSemester] = useState<'First Semester' | 'Second Semester' | null>(null);
@@ -60,12 +62,33 @@ export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewA
   const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Configuration
-  const [questionCount, setQuestionCount] = useState(20);
+  // Configuration — seeded from System Settings → CBT Configuration. See the
+  // note in UTMEDashboard: the admin default is a starting point, and a slow
+  // settings response must not overwrite a value the student already changed.
+  const [questionCount, setQuestionCount] = useState(config.cbt.default_question_count);
   const [isTimed, setIsTimed] = useState(true);
-  const [timeMinutes, setTimeMinutes] = useState(30);
+  const [timeMinutes, setTimeMinutes] = useState(config.cbt.default_exam_duration_mins);
+  const [userAdjusted, setUserAdjusted] = useState(false);
+
+  useEffect(() => {
+    if (userAdjusted) return;
+    setQuestionCount(config.cbt.default_question_count);
+    setTimeMinutes(config.cbt.default_exam_duration_mins);
+  }, [config.cbt.default_question_count, config.cbt.default_exam_duration_mins, userAdjusted]);
+
+  /** Switched off by an admin in System Settings → Undergraduate. */
+  const undergradCbtDisabled = config.cbt.undergraduate_cbt_enabled === false;
+
+  /**
+   * The one semester an admin has open (System Settings → Academic Sessions).
+   * Only this semester's courses and CBT papers are offered, because the two
+   * semesters' papers are separate question banks and a student working ahead
+   * would be drilling material the platform has not opened.
+   */
+  const activeSemester: Semester = config.academic.current_semester;
 
   const handleSemesterSelect = (semester: 'First Semester' | 'Second Semester') => {
+    if (semester !== activeSemester) return;
     setSelectedSemester(semester);
     setSelectedCourse(null);
     setSelectedTopic(null);
@@ -134,6 +157,7 @@ export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewA
   };
 
   const startDrill = () => {
+    if (undergradCbtDisabled) return;
     onStartDrill({
       courseCode: selectedCourse,
       mode: practiceMode,
@@ -198,25 +222,66 @@ export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewA
             </h2>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {(['First Semester', 'Second Semester'] as const).map(sem => (
-                <button
-                  key={sem}
-                  onClick={() => handleSemesterSelect(sem)}
-                  className="p-8 bg-[#0f172a] border border-slate-800 hover:border-amber-500/50 rounded-2xl flex flex-col items-start group transition-all text-left shadow-lg"
-                >
-                  <div className="p-3 bg-amber-500/10 text-amber-400 rounded-xl mb-4 group-hover:bg-amber-500 group-hover:text-slate-950 transition-colors">
-                    <Layers size={28} />
-                  </div>
-                  <h3 className="text-xl font-bold text-white mb-2">{sem}</h3>
-                  <p className="text-sm text-slate-400 mb-6">
-                    {sem === 'First Semester' ? 'Access CHM 101, PHY 101, MTH 101, COS 101 & CBT-only practical courses.' : 'Access CHM 102, PHY 102, MTH 102, MTH 114 & CBT-only practical courses.'}
-                  </p>
-                  <span className="text-xs font-bold text-amber-500 flex items-center gap-1 group-hover:translate-x-1 transition-transform">
-                    Select Semester <ChevronRight size={16} />
-                  </span>
-                </button>
-              ))}
+              {(['First Semester', 'Second Semester'] as const).map(sem => {
+                // Only the semester an admin has opened is selectable. The other
+                // stays visible but inert, so a student can see what exists
+                // without being able to drill a bank the platform has not opened.
+                const isActive = sem === activeSemester;
+                return (
+                  <button
+                    key={sem}
+                    onClick={() => handleSemesterSelect(sem)}
+                    disabled={!isActive}
+                    className={`p-8 rounded-2xl flex flex-col items-start group transition-all text-left shadow-lg border ${
+                      isActive
+                        ? 'bg-[#0f172a] border-slate-800 hover:border-amber-500/50'
+                        : 'bg-slate-900/40 border-slate-800/60 opacity-60 cursor-not-allowed'
+                    }`}
+                  >
+                    <div className={`p-3 rounded-xl mb-4 transition-colors ${
+                      isActive
+                        ? 'bg-amber-500/10 text-amber-400 group-hover:bg-amber-500 group-hover:text-slate-950'
+                        : 'bg-slate-800 text-slate-500'
+                    }`}>
+                      <Layers size={28} />
+                    </div>
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
+                      <h3 className="text-xl font-bold text-white">{sem}</h3>
+                      {isActive ? (
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                          Active
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-800 border border-slate-700 px-2 py-0.5 rounded-full">
+                          Not open
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-sm text-slate-400 mb-6">
+                      {sem === 'First Semester' ? 'Access CHM 101, PHY 101, MTH 101, COS 101 & CBT-only practical courses.' : 'Access CHM 102, PHY 102, MTH 102, MTH 114 & CBT-only practical courses.'}
+                    </p>
+                    <span className={`text-xs font-bold flex items-center gap-1 transition-transform ${
+                      isActive ? 'text-amber-500 group-hover:translate-x-1' : 'text-slate-500'
+                    }`}>
+                      {isActive ? 'Select Semester' : 'Closed by administrator'} <ChevronRight size={16} />
+                    </span>
+                  </button>
+                );
+              })}
             </div>
+
+            {undergradCbtDisabled && (
+              <div className="mt-6 p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex items-start gap-3">
+                <AlertCircle size={18} className="text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <div className="text-amber-300 text-sm font-bold">Undergraduate CBT is currently unavailable</div>
+                  <div className="text-xs text-slate-300 mt-0.5">
+                    Practice sittings are paused for now. Your previous attempts and scores are
+                    unchanged and remain available under Performance Analytics.
+                  </div>
+                </div>
+              </div>
+            )}
           </motion.div>
         )}
 
@@ -411,7 +476,7 @@ export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewA
                       type="range" 
                       min="5" max="100" step="5"
                       value={questionCount}
-                      onChange={(e) => setQuestionCount(parseInt(e.target.value))}
+                      onChange={(e) => { setUserAdjusted(true); setQuestionCount(parseInt(e.target.value)); }}
                       className="w-full accent-amber-500"
                     />
                     <div className="flex justify-between text-xs text-slate-500 mt-1">
@@ -442,7 +507,7 @@ export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewA
                         type="range" 
                         min="5" max="120" step="5"
                         value={timeMinutes}
-                        onChange={(e) => setTimeMinutes(parseInt(e.target.value))}
+                        onChange={(e) => { setUserAdjusted(true); setTimeMinutes(parseInt(e.target.value)); }}
                         className="w-full accent-amber-500"
                       />
                     </div>
@@ -451,11 +516,13 @@ export default function CBTUndergraduateDrilling({ onStartDrill, onBack, onViewA
 
                 <button
                   onClick={startDrill}
-                  disabled={practiceMode === 'topic' && !selectedTopic}
+                  disabled={undergradCbtDisabled || (practiceMode === 'topic' && !selectedTopic)}
                   className="w-full py-4 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-[#0f172a] rounded-xl font-bold transition-colors flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20"
                 >
                   <Play size={20} />
-                  {practiceMode === 'random' ? 'Start Random CBT' : 'Start Topic CBT'}
+                  {undergradCbtDisabled
+                    ? 'CBT Unavailable'
+                    : practiceMode === 'random' ? 'Start Random CBT' : 'Start Topic CBT'}
                 </button>
                 {practiceMode === 'topic' && !selectedTopic && (
                   <p className="text-xs text-center text-rose-400 mt-3">Please select a topic to start Topic CBT.</p>

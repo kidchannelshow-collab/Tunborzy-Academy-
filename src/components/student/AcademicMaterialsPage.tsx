@@ -4,6 +4,7 @@ import { BookOpen, Layers, FileText, ArrowLeft, Loader2, PlayCircle, BookMarked,
 import DashboardLayout from '../dashboard/DashboardLayout';
 import { supabase } from '../../supabaseClient';
 import { useProfile } from '../../lib/useProfile';
+import { usePlatformConfig } from '../../lib/platformSettings';
 import StudentLessonViewer from '../materials/StudentLessonViewer';
 import CBTExamTaker from '../cbt/CBTExamTaker';
 import CBTResultView from '../cbt/CBTResultView';
@@ -15,7 +16,10 @@ interface AcademicMaterialsPageProps {
 
 export default function AcademicMaterialsPage({ onLogout, onNavigate }: AcademicMaterialsPageProps) {
   const { profile } = useProfile();
-  
+  // The semester an admin has opened (System Settings → Academic Sessions).
+  const { config } = usePlatformConfig();
+  const activeSemester = config.academic.current_semester;
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,6 +39,15 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
   useEffect(() => {
     fetchLevels();
   }, [profile]);
+
+  // The settings arrive asynchronously, so the first course fetch may run before
+  // the real active semester is known. When it resolves — or when an admin
+  // switches semester while a student is browsing — the open course list is
+  // rebuilt against the correct semester.
+  useEffect(() => {
+    if (selectedLevel) fetchCourses(selectedLevel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSemester]);
 
   const fetchLevels = async () => {
     try {
@@ -89,9 +102,23 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
         // staff action meaning "retire this", so it must not remain browsable.
         .eq('is_archived', false)
         .order('title', { ascending: true });
-        
+
       if (error) throw error;
-      setCourses(data || []);
+
+      // Only the active semester is offered (System Settings → Academic
+      // Sessions). Scoped to Undergraduate because that is the only portal with
+      // a semester concept — CourseManagement writes `semester: null` for UTME
+      // and Post-UTME courses, which have their own structure.
+      //
+      // The filter is null-safe on purpose: an untagged course is KEPT. Courses
+      // created before the semester column existed have no value, and dropping
+      // them would make parts of the library silently vanish for students rather
+      // than simply withholding the closed semester.
+      setCourses((data || []).filter(c =>
+        level !== 'Undergraduate' ||
+        !c.semester ||
+        c.semester === activeSemester
+      ));
     } catch (err: any) {
       setError('Failed to load courses.');
       console.error(err);
@@ -543,8 +570,14 @@ export default function AcademicMaterialsPage({ onLogout, onNavigate }: Academic
                   backendDrill: true,
                   level: selectedLevel || profile?.level || '100 Level',
                   courseCode: selectedCourse?.course_code,
+                  // `mode: 'topic'` is required for the server to apply `topic`
+                  // at all — without it the drill returned random questions from
+                  // the whole course rather than the topic the student opened.
+                  mode: 'topic',
                   topic: cbtModalTopic,
-                  questionsCount: 10,
+                  // `limit` is the key POST /api/cbt/start reads; `questionsCount`
+                  // was ignored, so this drill ran at the server default length.
+                  limit: 10,
                   time: 15
                 }}
                 onFinish={(attId) => {

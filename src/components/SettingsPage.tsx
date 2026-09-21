@@ -8,6 +8,7 @@ import {
 import DashboardLayout from './dashboard/DashboardLayout';
 import { useProfile, refreshProfile } from '../lib/useProfile';
 import { supabase } from '../supabaseClient';
+import { useGeneralSettings } from '../lib/platformSettings';
 
 interface SettingsPageProps {
   onLogout: () => void;
@@ -16,6 +17,10 @@ interface SettingsPageProps {
 
 export default function SettingsPage({ onLogout, onNavigate }: SettingsPageProps) {
   const { profile, loading } = useProfile();
+  // The legal copy is written about this platform by name; taking it from the
+  // setting keeps it correct if the platform is ever renamed.
+  const { settings: platformSettings } = useGeneralSettings();
+  const platformName = platformSettings.platform_name;
 
   const [nameInput, setNameInput] = useState('');
   const [emailInput, setEmailInput] = useState('');
@@ -518,7 +523,7 @@ export default function SettingsPage({ onLogout, onNavigate }: SettingsPageProps
                     <>
                       <p>Last updated: August 2026</p>
                       <h4 className="font-bold text-white mt-4">1. Information We Collect</h4>
-                      <p>Tunborzy Academy processes account registration details (such as your full name, email address, student ID, and university profile), academic activity logs, CBT test attempts and scores, uploaded educational materials, and AI interaction history.</p>
+                      <p>{platformName} processes account registration details (such as your full name, email address, student ID, and university profile), academic activity logs, CBT test attempts and scores, uploaded educational materials, and AI interaction history.</p>
                       <h4 className="font-bold text-white mt-4">2. How We Use Your Data</h4>
                       <p>Your data is used strictly to provide educational services, personalize your learning experience, track academic progress, and manage secure authentication.</p>
                       <h4 className="font-bold text-white mt-4">3. Payments & Third-Party Services</h4>
@@ -530,13 +535,13 @@ export default function SettingsPage({ onLogout, onNavigate }: SettingsPageProps
                     <>
                       <p>Last updated: August 2026</p>
                       <h4 className="font-bold text-white mt-4">1. Acceptance of Terms</h4>
-                      <p>By accessing and using Tunborzy Academy, you agree to abide by these Terms and Conditions and our academic honor code.</p>
+                      <p>By accessing and using {platformName}, you agree to abide by these Terms and Conditions and our academic honor code.</p>
                       <h4 className="font-bold text-white mt-4">2. Student Accounts & Integrity</h4>
                       <p>You are responsible for maintaining the confidentiality of your account credentials. CBT exams and drilling sessions must be completed with academic integrity.</p>
                       <h4 className="font-bold text-white mt-4">3. Intellectual Property</h4>
-                      <p>All academic materials, lectures, CBT question banks, and platform software are protected by copyright and intellectual property laws belonging to Tunborzy Academy and authorized educators.</p>
+                      <p>All academic materials, lectures, CBT question banks, and platform software are protected by copyright and intellectual property laws belonging to {platformName} and authorized educators.</p>
                       <h4 className="font-bold text-white mt-4">4. Limitation of Liability</h4>
-                      <p>Tunborzy Academy is provided on an "as is" and "as available" basis for educational and examination preparation purposes.</p>
+                      <p>{platformName} is provided on an "as is" and "as available" basis for educational and examination preparation purposes.</p>
                     </>
                   )}
                 </div>

@@ -6,6 +6,7 @@ import {
   RefreshCcw, AlertCircle, Check, Play, ShieldAlert, BarChart2, Calendar
 } from 'lucide-react';
 import { POST_UTME_UNIVERSITY_NAME } from '../../lib/postUtme';
+import { usePlatformConfig } from '../../lib/platformSettings';
 
 interface PostUtmeExam {
   id: string;
@@ -47,6 +48,17 @@ interface TestResult {
 }
 
 export default function PostUtmeDrillPage() {
+  const { config } = usePlatformConfig();
+
+  /**
+   * The Post-UTME session, opened or closed by an admin in System Settings →
+   * Post-UTME. Closing it withdraws access to NEW sittings only — the papers,
+   * every past attempt and every score stay exactly as they were, so reopening
+   * the session restores the full history. The server enforces the same rule in
+   * /api/post-utme/start, so a retained examId cannot start one either.
+   */
+  const sessionClosed = config.cbt.post_utme_cbt_enabled === false;
+
   const [exams, setExams] = useState<PostUtmeExam[]>([]);
   const [selectedExam, setSelectedExam] = useState<PostUtmeExam | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -145,6 +157,7 @@ export default function PostUtmeDrillPage() {
   };
 
   const handleStartTest = async (exam: PostUtmeExam) => {
+    if (sessionClosed) return;
     setLoading(true);
     try {
 
@@ -296,6 +309,21 @@ export default function PostUtmeDrillPage() {
           </span>
         </div>
 
+        {sessionClosed && (
+          <div className="p-4 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 rounded-2xl flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="text-sm font-bold text-amber-800 dark:text-amber-300">
+                The Post-UTME session is currently closed
+              </div>
+              <div className="text-xs text-amber-700 dark:text-amber-400/80 mt-0.5">
+                New practice sittings are paused for now. Your papers and previous results are
+                unchanged and will be available again when the session reopens.
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredExams.map((exam) => (
             <div 
@@ -321,10 +349,10 @@ export default function PostUtmeDrillPage() {
                 </span>
                 <button
                   onClick={() => handleStartTest(exam)}
-                  disabled={loading}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium text-sm flex items-center gap-2 shadow-sm transition-all"
+                  disabled={loading || sessionClosed}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl font-medium text-sm flex items-center gap-2 shadow-sm transition-all"
                 >
-                  <Play className="w-4 h-4 fill-current" /> Start Drill
+                  <Play className="w-4 h-4 fill-current" /> {sessionClosed ? 'Session Closed' : 'Start Drill'}
                 </button>
               </div>
             </div>

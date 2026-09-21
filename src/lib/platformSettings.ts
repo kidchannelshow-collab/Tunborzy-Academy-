@@ -2,20 +2,32 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../supabaseClient';
 
 /**
- * General platform settings — the single source of truth.
+ * Platform settings — the single source of truth for platform-wide configuration.
  *
  * `platform_settings` (migration 0047) stores one row per category with a JSONB
- * `settings` blob. The 'general' row holds the platform identity and the
- * maintenance flag.
+ * `settings` blob. Three categories are read here:
+ *
+ *   general   platform identity + the maintenance flag (App.tsx gate, Navbar,
+ *             Footer, MaintenanceScreen, document title)
+ *   academic  the active academic session and the single active semester
+ *   cbt       the per-portal session flags and the shared exam defaults
  *
  * This module is a tiny shared store rather than a hook that fetches on its own:
- * the maintenance gate in App.tsx, the Navbar and the Footer all need the same
- * values, and without a shared cache each would issue its own query on every
- * mount. One request is fetched, cached, and handed to every consumer.
+ * the maintenance gate, the Navbar, the Footer and every CBT entry point need
+ * the same values, and without a shared cache each would issue its own query on
+ * every mount. One request is fetched, cached, and handed to every consumer.
  *
- * Fallbacks matter here: if the row is missing, the query fails, or a field is
+ * ONE REQUEST, NOT THREE. The query selects every readable row and sorts them
+ * into categories client-side. That works for both audiences without branching:
+ * migration 0056 lets a signed-OUT visitor read the `general` row (so the
+ * maintenance screen can be shown on the public pages), while 0047 already lets
+ * any signed-IN user read every category. An anon caller therefore receives one
+ * row and simply keeps the academic/cbt defaults; an authenticated caller
+ * receives all three.
+ *
+ * Fallbacks matter here: if a row is missing, the query fails, or a field is
  * blank, the platform must keep working with sensible defaults rather than
- * render an empty brand or crash.
+ * render an empty brand, an unlabelled semester or a crash.
  */
 
 export interface GeneralSettings {
@@ -27,8 +39,41 @@ export interface GeneralSettings {
 }
 
 /**
+ * The two semesters the platform actually runs. Modelled as a single value
+ * rather than a pair of booleans precisely so that "only one active semester at
+ * a time" cannot be violated — there is no second field to leave switched on.
+ */
+export type Semester = 'First Semester' | 'Second Semester';
+
+export const SEMESTERS: readonly Semester[] = ['First Semester', 'Second Semester'];
+
+export interface AcademicSettings {
+  current_academic_session: string;
+  current_semester: Semester;
+}
+
+export interface CbtSettings {
+  /** Undergraduate CBT — students may start course drills. */
+  undergraduate_cbt_enabled: boolean;
+  /** The UTME session: false means the session is closed to candidates. */
+  utme_cbt_enabled: boolean;
+  /** The Post-UTME session: false means the session is closed to candidates. */
+  post_utme_cbt_enabled: boolean;
+  /** Applied only where a caller does not supply its own duration. */
+  default_exam_duration_mins: number;
+  /** Applied only where a caller does not supply its own question count. */
+  default_question_count: number;
+}
+
+export interface PlatformConfig {
+  general: GeneralSettings;
+  academic: AcademicSettings;
+  cbt: CbtSettings;
+}
+
+/**
  * Used until (or unless) the database answers. These match the values seeded by
- * migration 0047 so a first paint never shows an empty shell.
+ * migrations 0047 and 0057 so a first paint never shows an empty shell.
  */
 export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   platform_name: 'Tunborzy Academy',
@@ -38,17 +83,47 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   maintenance_mode: false,
 };
 
-let cache: GeneralSettings = DEFAULT_GENERAL_SETTINGS;
+export const DEFAULT_ACADEMIC_SETTINGS: AcademicSettings = {
+  current_academic_session: '2026/2027',
+  current_semester: 'First Semester',
+};
+
+export const DEFAULT_CBT_SETTINGS: CbtSettings = {
+  undergraduate_cbt_enabled: true,
+  utme_cbt_enabled: true,
+  post_utme_cbt_enabled: true,
+  default_exam_duration_mins: 30,
+  default_question_count: 40,
+};
+
+export const DEFAULT_PLATFORM_CONFIG: PlatformConfig = {
+  general: DEFAULT_GENERAL_SETTINGS,
+  academic: DEFAULT_ACADEMIC_SETTINGS,
+  cbt: DEFAULT_CBT_SETTINGS,
+};
+
+let cache: PlatformConfig = DEFAULT_PLATFORM_CONFIG;
 let hasLoaded = false;
-let inflight: Promise<GeneralSettings> | null = null;
-const listeners = new Set<(settings: GeneralSettings) => void>();
+let inflight: Promise<PlatformConfig> | null = null;
+const listeners = new Set<(config: PlatformConfig) => void>();
 
 function emit() {
   for (const listener of listeners) listener(cache);
 }
 
+/**
+ * Keep the browser tab in step with the configured platform name. index.html
+ * ships a hardcoded <title>; without this the tab would keep advertising the
+ * old name after a rename.
+ */
+function applyDocumentTitle(name: string) {
+  if (typeof document !== 'undefined' && name) {
+    document.title = name;
+  }
+}
+
 /** Normalise a raw JSONB blob into a complete, correctly-typed settings object. */
-function coerce(raw: any): GeneralSettings {
+function coerceGeneral(raw: any): GeneralSettings {
   const value = raw && typeof raw === 'object' ? raw : {};
   return {
     platform_name: String(value.platform_name ?? '').trim() || DEFAULT_GENERAL_SETTINGS.platform_name,
@@ -63,28 +138,100 @@ function coerce(raw: any): GeneralSettings {
   };
 }
 
+function coerceAcademic(raw: any): AcademicSettings {
+  const value = raw && typeof raw === 'object' ? raw : {};
+  const session = String(value.current_academic_session ?? '').trim();
+  // Anything that is not one of the two real semesters is discarded rather than
+  // passed through: a semester value that matches no course would silently empty
+  // every student-facing list.
+  const semester = SEMESTERS.includes(value.current_semester)
+    ? (value.current_semester as Semester)
+    : DEFAULT_ACADEMIC_SETTINGS.current_semester;
+  return {
+    current_academic_session: session || DEFAULT_ACADEMIC_SETTINGS.current_academic_session,
+    current_semester: semester,
+  };
+}
+
+function coerceCbt(raw: any): CbtSettings {
+  const value = raw && typeof raw === 'object' ? raw : {};
+  const duration = Number(value.default_exam_duration_mins);
+  const count = Number(value.default_question_count);
+  return {
+    // Absent means "not configured", which is open — never silently closed.
+    undergraduate_cbt_enabled: value.undergraduate_cbt_enabled !== false,
+    utme_cbt_enabled: value.utme_cbt_enabled !== false,
+    post_utme_cbt_enabled: value.post_utme_cbt_enabled !== false,
+    default_exam_duration_mins:
+      Number.isFinite(duration) && duration > 0
+        ? duration
+        : DEFAULT_CBT_SETTINGS.default_exam_duration_mins,
+    default_question_count:
+      Number.isFinite(count) && count > 0 ? count : DEFAULT_CBT_SETTINGS.default_question_count,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Backwards-compatible general accessors (Navbar, Footer, MaintenanceScreen).
+// ---------------------------------------------------------------------------
+
 export function getCachedGeneralSettings(): GeneralSettings {
+  return cache.general;
+}
+
+/** Fetches every readable settings row. Concurrent callers share one request. */
+export function loadGeneralSettings(): Promise<GeneralSettings> {
+  return loadPlatformConfig().then(() => cache.general);
+}
+
+export function subscribeGeneralSettings(listener: (settings: GeneralSettings) => void): () => void {
+  return subscribePlatformConfig((config) => listener(config.general));
+}
+
+export function hasLoadedGeneralSettings(): boolean {
+  return hasLoaded;
+}
+
+// ---------------------------------------------------------------------------
+// Full platform config.
+// ---------------------------------------------------------------------------
+
+export function getCachedPlatformConfig(): PlatformConfig {
   return cache;
 }
 
+export function getCachedCbtSettings(): CbtSettings {
+  return cache.cbt;
+}
+
+export function getCachedAcademicSettings(): AcademicSettings {
+  return cache.academic;
+}
+
 /**
- * Fetches the 'general' row. Concurrent callers share one request. A failure is
- * swallowed deliberately — this drives branding and a maintenance gate, and a
- * transient query error must not blank the Navbar or lock the whole platform.
+ * A failure is swallowed deliberately — these values drive branding, a
+ * maintenance gate and exam availability, and a transient query error must not
+ * blank the Navbar, lock the platform, or close every exam. The defaults are the
+ * safe reading in each case (branded, not in maintenance, sessions open).
  */
-export function loadGeneralSettings(): Promise<GeneralSettings> {
+export function loadPlatformConfig(): Promise<PlatformConfig> {
   if (inflight) return inflight;
 
   inflight = (async () => {
     if (!supabase) return cache;
-    const { data, error } = await supabase
-      .from('platform_settings')
-      .select('settings')
-      .eq('category', 'general')
-      .maybeSingle();
+    const { data, error } = await supabase.from('platform_settings').select('category, settings');
 
-    if (!error && data) {
-      cache = coerce(data.settings);
+    if (!error && Array.isArray(data)) {
+      const byCategory = new Map<string, any>();
+      for (const row of data) {
+        if (row && typeof row.category === 'string') byCategory.set(row.category, row.settings);
+      }
+      cache = {
+        general: coerceGeneral(byCategory.get('general')),
+        academic: coerceAcademic(byCategory.get('academic')),
+        cbt: coerceCbt(byCategory.get('cbt')),
+      };
+      applyDocumentTitle(cache.general.platform_name);
     }
     hasLoaded = true;
     inflight = null;
@@ -96,28 +243,51 @@ export function loadGeneralSettings(): Promise<GeneralSettings> {
 }
 
 /** Called after an admin saves, so the change applies without a full reload. */
-export function refreshGeneralSettings(): Promise<GeneralSettings> {
+export function refreshPlatformSettings(): Promise<PlatformConfig> {
   inflight = null;
-  return loadGeneralSettings();
+  return loadPlatformConfig();
 }
 
-export function subscribeGeneralSettings(listener: (settings: GeneralSettings) => void): () => void {
+export function refreshGeneralSettings(): Promise<GeneralSettings> {
+  return refreshPlatformSettings().then((config) => config.general);
+}
+
+export function subscribePlatformConfig(listener: (config: PlatformConfig) => void): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
   };
 }
 
-export function hasLoadedGeneralSettings(): boolean {
-  return hasLoaded;
-}
-
 /**
  * Subscribe to the shared settings. Returns the cached values immediately when
  * they are already available, so consumers do not flicker on every mount.
  */
+export function usePlatformConfig(): { config: PlatformConfig; loading: boolean } {
+  const [config, setConfig] = useState<PlatformConfig>(cache);
+  const [loading, setLoading] = useState(!hasLoaded);
+
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = subscribePlatformConfig((next) => {
+      if (active) setConfig(next);
+    });
+
+    loadPlatformConfig().finally(() => {
+      if (active) setLoading(false);
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
+
+  return { config, loading };
+}
+
 export function useGeneralSettings(): { settings: GeneralSettings; loading: boolean } {
-  const [settings, setSettings] = useState<GeneralSettings>(cache);
+  const [settings, setSettings] = useState<GeneralSettings>(cache.general);
   const [loading, setLoading] = useState(!hasLoaded);
 
   useEffect(() => {
@@ -126,7 +296,7 @@ export function useGeneralSettings(): { settings: GeneralSettings; loading: bool
       if (active) setSettings(next);
     });
 
-    loadGeneralSettings().finally(() => {
+    loadPlatformConfig().finally(() => {
       if (active) setLoading(false);
     });
 

@@ -619,8 +619,12 @@ export default function StudentLessonViewer({ material, onClose, onNavigateToSib
                   customConfig={{
                     backendDrill: true,
                     courseCode: material.course_code,
+                    mode: 'topic',
                     topics: [material.topic],
-                    count: 10,
+                    // `limit` is the key POST /api/cbt/start actually reads; this
+                    // was sent as `count`, which the server ignores, so the drill
+                    // silently ran with the server's default length instead of 10.
+                    limit: 10,
                     timed: true,
                     time: 15
                   }}

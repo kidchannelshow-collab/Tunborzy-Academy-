@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { BookOpen, Clock, Award, CheckCircle2, Play, FileText, ChevronRight, History, ArrowLeft, RefreshCw, BarChart2 } from 'lucide-react';
 import { supabase } from '../../supabaseClient';
 import { useProfile } from '../../lib/useProfile';
+import { usePlatformConfig } from '../../lib/platformSettings';
 
 interface UTMEDashboardProps {
   onStartExam: (config: any) => void;
@@ -12,6 +13,7 @@ interface UTMEDashboardProps {
 
 export default function UTMEDashboard({ onStartExam, onViewHistory }: UTMEDashboardProps) {
   const { profile } = useProfile();
+  const { config } = usePlatformConfig();
   const [subjects, setSubjects] = useState<any[]>([]);
   const [topics, setTopics] = useState<any[]>([]);
   const [history, setHistory] = useState<any[]>([]);
@@ -58,8 +60,25 @@ export default function UTMEDashboard({ onStartExam, onViewHistory }: UTMEDashbo
   const [availableYears, setAvailableYears] = useState<string[]>([]);
   const [availableDifficulties, setAvailableDifficulties] = useState<string[]>([]);
   const [availableQuestionsCount, setAvailableQuestionsCount] = useState<number>(0);
-  const [questionCount, setQuestionCount] = useState(25);
-  const [durationMinutes, setDurationMinutes] = useState(30);
+  // Seeded from System Settings → CBT Configuration. The admin's defaults are
+  // the starting point only; a student can still move the sliders for their own
+  // sitting, and the value they choose is what the server is asked for.
+  const [questionCount, setQuestionCount] = useState(config.cbt.default_question_count);
+  const [durationMinutes, setDurationMinutes] = useState(config.cbt.default_exam_duration_mins);
+
+  // The settings arrive asynchronously (one request, shared with the rest of the
+  // app), so the sliders are re-seeded once — and only while the student has not
+  // touched them. Without the `userAdjusted` guard a slow response would yank a
+  // slider back under the student's finger mid-drag.
+  const [userAdjusted, setUserAdjusted] = useState(false);
+  useEffect(() => {
+    if (userAdjusted) return;
+    setQuestionCount(config.cbt.default_question_count);
+    setDurationMinutes(config.cbt.default_exam_duration_mins);
+  }, [config.cbt.default_question_count, config.cbt.default_exam_duration_mins, userAdjusted]);
+
+  /** Closed by an admin in System Settings → UTME. History stays readable. */
+  const utmeSessionClosed = config.cbt.utme_cbt_enabled === false;
 
   const OFFICIAL_UTME_SUBJECTS = [
     { id: 'utme_mth', code: 'MTH', name: 'MATHEMATICS', description: 'Core UTME Mathematics covering algebra, calculus, and statistics.' },
@@ -190,7 +209,7 @@ export default function UTMEDashboard({ onStartExam, onViewHistory }: UTMEDashbo
   }, [selectedSubject, selectedMode, selectedTopicId, selectedYear, selectedDifficulty]);
 
   const handleStart = () => {
-    if (!selectedSubject) return;
+    if (utmeSessionClosed || !selectedSubject) return;
     onStartExam({
       subjectId: selectedSubject.id,
       subjectName: selectedSubject.name,
@@ -459,7 +478,7 @@ export default function UTMEDashboard({ onStartExam, onViewHistory }: UTMEDashbo
                     max={Math.max(10, availableQuestionsCount || 50)} 
                     step="5"
                     value={questionCount}
-                    onChange={(e) => setQuestionCount(parseInt(e.target.value))}
+                    onChange={(e) => { setUserAdjusted(true); setQuestionCount(parseInt(e.target.value)); }}
                     className="w-full accent-emerald-500"
                   />
                   {availableQuestionsCount === 0 && (
@@ -476,17 +495,30 @@ export default function UTMEDashboard({ onStartExam, onViewHistory }: UTMEDashbo
                     type="range"
                     min="10" max="90" step="5"
                     value={durationMinutes}
-                    onChange={(e) => setDurationMinutes(parseInt(e.target.value))}
+                    onChange={(e) => { setUserAdjusted(true); setDurationMinutes(parseInt(e.target.value)); }}
                     className="w-full accent-emerald-500"
                   />
                 </div>
 
+                {utmeSessionClosed && (
+                  <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex items-start gap-3">
+                    <Clock size={18} className="text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="text-amber-300 text-sm font-bold">UTME session is currently closed</div>
+                      <div className="text-xs text-slate-300 mt-0.5">
+                        New practice sittings are paused for now. Your previous attempts and scores
+                        are still available under History.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <button
                   onClick={handleStart}
-                  disabled={(selectedMode === 'topic' && topics.length > 0 && !selectedTopicId) || availableQuestionsCount === 0}
+                  disabled={utmeSessionClosed || (selectedMode === 'topic' && topics.length > 0 && !selectedTopicId) || availableQuestionsCount === 0}
                   className="w-full py-4 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-slate-950 font-bold rounded-2xl transition-colors flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20"
                 >
-                  <Play size={20} /> Start UTME Exam
+                  <Play size={20} /> {utmeSessionClosed ? 'Session Closed' : 'Start UTME Exam'}
                 </button>
               </div>
             </div>
