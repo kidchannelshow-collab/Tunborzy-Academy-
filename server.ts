@@ -5,7 +5,10 @@ dotenv.config({ path: ['.env.local', '.env'], override: false });
 
 import express from 'express';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
+// NOTE: `vite` is deliberately NOT imported statically. It is only needed by the
+// local dev server (see startServer below) and is loaded there with a dynamic
+// import. A static import would pull the whole Vite toolchain into the deployed
+// serverless function, which never serves the SPA — Vercel does that.
 import { GoogleGenAI, Type, Schema } from '@google/genai';
 import { createClient } from '@supabase/supabase-js';
 import multer from 'multer';
@@ -41,6 +44,55 @@ function createSupabaseClient(options?: Parameters<typeof createClient>[2]) {
 }
 
 const supabase = createSupabaseClient();
+
+/**
+ * Read the `cbt` category from `platform_settings` for a server-side gate.
+ *
+ * The admin's session switches are only real if the SERVER refuses to start an
+ * exam, not merely if the button is hidden — a student holding a stale page, or
+ * calling the endpoint directly, must not be able to start a closed session. So
+ * every exam-start route consults this before handing out questions.
+ *
+ * Read with the CALLER's JWT rather than the shared anon client: RLS on
+ * `platform_settings` (0047) grants SELECT to any authenticated user, whereas the
+ * anon client would read zero rows and every gate would fall through to "open".
+ *
+ * Fail-open is deliberate and is the only safe default here. A transient query
+ * error must not close every exam on the platform, and a missing category means
+ * "not configured", which is not the same as "closed".
+ */
+async function readCbtSettings(sb: ReturnType<typeof createSupabaseClient>) {
+  const defaults = {
+    undergraduate_cbt_enabled: true,
+    utme_cbt_enabled: true,
+    post_utme_cbt_enabled: true,
+    default_exam_duration_mins: 30,
+    default_question_count: 40,
+  };
+  try {
+    const { data, error } = await sb
+      .from('platform_settings')
+      .select('settings')
+      .eq('category', 'cbt')
+      .maybeSingle();
+    if (error || !data || !data.settings || typeof data.settings !== 'object') return defaults;
+    const value = data.settings as Record<string, any>;
+    const duration = Number(value.default_exam_duration_mins);
+    const count = Number(value.default_question_count);
+    return {
+      undergraduate_cbt_enabled: value.undergraduate_cbt_enabled !== false,
+      utme_cbt_enabled: value.utme_cbt_enabled !== false,
+      post_utme_cbt_enabled: value.post_utme_cbt_enabled !== false,
+      default_exam_duration_mins:
+        Number.isFinite(duration) && duration > 0 ? duration : defaults.default_exam_duration_mins,
+      default_question_count:
+        Number.isFinite(count) && count > 0 ? count : defaults.default_question_count,
+    };
+  } catch (err) {
+    console.warn('[Platform Settings] CBT settings read failed, assuming open:', err);
+    return defaults;
+  }
+}
 
 /**
  * The ONE model the PDF→UTME-CBT importer is allowed to use.
@@ -108,9 +160,17 @@ process.on('unhandledRejection', (reason, promise) => {
 const upload = multer({ storage: multer.memoryStorage() });
 
 
-async function startServer() {
+/**
+ * Build the Express application.
+ *
+ * This is synchronous and side-effect free — it only wires up middleware and
+ * routes — so that the finished app can be exported and handed to a host that
+ * owns its own request lifecycle (Vercel invokes the exported app once per
+ * request). Listening and the SPA-serving middleware live in `startServer`
+ * below, because neither is wanted on a serverless platform.
+ */
+function createApp() {
   const app = express();
-  const PORT = 3000;
 
   app.use(express.json({ limit: '10mb' }));
 
@@ -948,6 +1008,14 @@ Instructions:
 
       console.log('[CBT Start Debug]', { courseCode, mode, topic, topics, limit });
 
+      // Undergraduate CBT master switch (System Settings → Undergraduate).
+      const cbtSettings = await readCbtSettings(sb);
+      if (!cbtSettings.undergraduate_cbt_enabled) {
+        return res.status(403).json({
+          error: 'Undergraduate CBT is currently unavailable. Please try again later.'
+        });
+      }
+
       const { data: allPublishedExams, error: examsErr } = await sb.from('cbt_exams')
         .select('id, course_code, is_published, topic')
         .eq('is_published', true);
@@ -996,7 +1064,10 @@ Instructions:
 
       // Shuffle and limit
       let finalQuestions = [...filteredQuestions].sort(() => 0.5 - Math.random());
-      const reqLimit = limit ? parseInt(limit, 10) : 20;
+      // The fallback is the admin-configured default (System Settings → CBT
+      // Configuration), not a constant, so the setting is authoritative even for
+      // a caller that omits `limit`.
+      const reqLimit = limit ? parseInt(limit, 10) : cbtSettings.default_question_count;
       if (reqLimit > 0) {
         finalQuestions = finalQuestions.slice(0, reqLimit);
       }
@@ -1171,6 +1242,17 @@ Instructions:
 
       if (!examId) return res.status(400).json({ error: 'Missing examId' });
 
+      // Post-UTME session control (System Settings → Post-UTME). Closing the
+      // session stops new sittings; it deletes nothing. Attempts, scores and
+      // accounts are untouched, so reopening the session restores exactly the
+      // history that was there before.
+      const cbtSettings = await readCbtSettings(sb);
+      if (!cbtSettings.post_utme_cbt_enabled) {
+        return res.status(403).json({
+          error: 'The Post-UTME session is currently closed. Please try again later.'
+        });
+      }
+
       // Unpublishing a paper must actually stop students taking it, not just
       // hide it from the list. The drill only lists published papers, so this
       // closes the gap where a retained examId could still start one.
@@ -1293,6 +1375,16 @@ Instructions:
         global: { headers: { Authorization: authHeader } }
       });
 
+      // UTME session control (System Settings → UTME). Closing the session stops
+      // new sittings; it deletes nothing. Candidates keep their accounts, and
+      // their attempts, scores and history remain exactly as they were.
+      const cbtSettings = await readCbtSettings(sb);
+      if (!cbtSettings.utme_cbt_enabled) {
+        return res.status(403).json({
+          error: 'The UTME session is currently closed. Please try again later.'
+        });
+      }
+
       let query = sb.from('utme_questions')
         .select('id, question_text, option_a, option_b, option_c, option_d, difficulty, year')
         .eq('subject_id', subjectId)
@@ -1314,9 +1406,11 @@ Instructions:
       if (error) throw error;
 
       let shuffled = [...(questions || [])].sort(() => 0.5 - Math.random());
-      if (count && count > 0) {
-        shuffled = shuffled.slice(0, count);
-      }
+      // The fallback is the admin-configured default (System Settings → CBT
+      // Configuration), not "every question in the bank", so the setting is
+      // authoritative even for a caller that omits `count`.
+      const requestedCount = count && count > 0 ? count : cbtSettings.default_question_count;
+      shuffled = shuffled.slice(0, requestedCount);
 
       // One sitting = one attempt row.
       //
@@ -2062,8 +2156,38 @@ Instructions:
     res.status(404).json({ error: 'API endpoint not found' });
   });
 
-  // Vite middleware for development
+  return app;
+}
+
+/**
+ * The application, exported for platforms that own the HTTP server.
+ *
+ * Vercel builds `api/index.ts` (and the `/api/*` catch-all) into a serverless
+ * function; each file simply re-exports this one app, so every deployed route is
+ * the exact same handler that `npm run dev` serves on localhost. There is no
+ * second copy of the routes.
+ */
+export const app = createApp();
+export default app;
+
+/**
+ * Serve the SPA locally and listen.
+ *
+ * NOT called on Vercel: the platform owns the server there, so calling
+ * `app.listen()` would be meaningless. `VERCEL` is set by the platform itself
+ * and is not something this repo defines.
+ *
+ * The SPA middleware is registered AFTER every API route, so a request only
+ * reaches Vite or the static handler when no API route (and not the JSON 404
+ * fallback above) has already answered it.
+ */
+async function startServer() {
+  // Vercel and most hosts inject the port to bind. The literal 3000 remains the
+  // fallback so local behaviour is unchanged.
+  const PORT = Number(process.env.PORT) || 3000;
+
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -2087,4 +2211,6 @@ Instructions:
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
